@@ -5,15 +5,16 @@ from uuid import uuid4
 
 import pytest
 
-from app.services.discussion_contract import (MAX_WIRE, ORDER, DiscussionCapacityError, DiscussionDiagnosticError, call_fingerprint, host_order, host_result,
-                                             host_schema, make_packet, public_run, safe_diagnostic, settled_call, validate_begin, wire)
+from app.services import adapters
+from app.services.discussion_contract import (MAX_WIRE, DiscussionCapacityError, DiscussionDiagnosticError, call_fingerprint, host_order, host_result,
+                                             host_schema, make_packet, order, public_run, safe_diagnostic, settled_call, validate_begin, wire)
 
 
 def sample_run():
     return {"run_id": str(uuid4()), "conversation_id": "conv-test", "message": "討論門口繞牆移動",
             "context": [{"source_id": "message:1", "speaker": "user", "content": "來源"}],
-            "snapshots": {s: {"model": "xai/grok-4.7" if s == "grok" else "model", "effort": "medium"} for s in set(ORDER)},
-            "bridge_epochs": {p: str(uuid4()) for p in ("codex", "claude_code", "grok")},
+            "snapshots": {s: {"model": "xai/grok-4.7" if s == "grok" else "model", "effort": "medium"} for s in set(order())},
+            "bridge_epochs": {p: str(uuid4()) for p in adapters.codes()},
             "state": "running", "version": 1, "stop_requested": False, "seal_confirmed": False,
             "calls": [], "events": []}
 
@@ -21,7 +22,7 @@ def sample_run():
 def add_result(run, ordinal):
     packet = make_packet(run, ordinal)
     run["calls"].append({"ordinal": ordinal, "call_id": packet["call_id"], "call_hash": packet["call_hash"],
-        "speaker": ORDER[ordinal - 1], "content": f"answer-{ordinal}", "execution": "ended", "result": "valid",
+        "speaker": order()[ordinal - 1], "content": f"answer-{ordinal}", "execution": "ended", "result": "valid",
         "admission": "accepted", "published": ordinal not in (2, 3, 4), "receipt": {"pid": 100}})
 
 
@@ -29,7 +30,7 @@ def prompt_data(packet):
     return json.loads(packet["prompt"].rsplit("\n", 1)[1])
 
 
-@pytest.mark.parametrize("speaker", ["codex", "claude_code", "grok"])
+@pytest.mark.parametrize("speaker", adapters.codes())
 def test_ended_member_error_allows_next_slot_without_turning_into_success(speaker):
     call = {"speaker": speaker, "admission": "accepted", "execution": "ended",
             "result": "error", "receipt": {"pid": 100}}
@@ -63,12 +64,12 @@ def test_valid_label_does_not_override_missing_execution_evidence(change):
 @pytest.mark.parametrize("ordinal,speaker,number,name,role", [
     (1, "dispatcher", 1, "調度員", "主持人"),
     (2, "codex", 2, "Codex", "討論參與者"),
-    (3, "claude_code", 3, "Claude", "討論參與者"),
-    (4, "grok", 4, "Grok", "討論參與者"),
+    (3, "grok", 3, "Grok", "討論參與者"),
+    (4, "claude_code", 4, "Claude Code", "討論參與者"),
     (5, "dispatcher", 1, "調度員", "主持人"),
     (6, "codex", 2, "Codex", "討論參與者"),
-    (7, "claude_code", 3, "Claude", "討論參與者"),
-    (8, "grok", 4, "Grok", "討論參與者"),
+    (7, "grok", 3, "Grok", "討論參與者"),
+    (8, "claude_code", 4, "Claude Code", "討論參與者"),
     (9, "dispatcher", 1, "調度員", "主持人"),
 ])
 def test_prompt_supplies_own_identity_roster_and_snapshot_model(ordinal, speaker, number, name, role):
@@ -82,7 +83,7 @@ def test_prompt_supplies_own_identity_roster_and_snapshot_model(ordinal, speaker
                         "configured_model": packet["model"], "configured_effort": packet["effort"],
                         "speech_ordinal": ordinal}
     assert [(p["speaker"], p["member_number"]) for p in data["participants"]] == [
-        ("dispatcher", 1), ("codex", 2), ("claude_code", 3), ("grok", 4)]
+        ("dispatcher", 1), ("codex", 2), ("grok", 3), ("claude_code", 4)]
     assert data["participants"][0]["configured_model"] == "host-model"
     assert data["participants"][1]["configured_model"] == "member-model"
     assert "實際執行模型未核實" in packet["prompt"]
@@ -93,8 +94,8 @@ def test_prompt_supplies_own_identity_roster_and_snapshot_model(ordinal, speaker
 def test_roll_call_keeps_numbers_after_skip_and_does_not_invent_default_model():
     run = sample_run()
     add_result(run, 1)
-    run["calls"].append({"ordinal": 3, "speaker": "claude_code", "result": "skipped"})
-    run["snapshots"]["grok"] = {"model": "", "effort": ""}
+    run["calls"].append({"ordinal": 3, "speaker": "grok", "result": "skipped"})
+    run["snapshots"]["claude_code"] = {"model": "", "effort": ""}
     packet = make_packet(run, 4)
     data = prompt_data(packet)
     assert data["identity"]["member_number"] == 4
@@ -103,7 +104,7 @@ def test_roll_call_keeps_numbers_after_skip_and_does_not_invent_default_model():
     assert "跳過者保留編號" in packet["prompt"]
     assert "名冊不代表已發言或已成功" in packet["prompt"]
     host = prompt_data(make_packet(run, 5))
-    assert host["skipped"] == [{"speaker": "claude_code", "reason": "weekly_quota_below_10_percent"}]
+    assert host["skipped"] == [{"speaker": "grok", "reason": "weekly_quota_below_10_percent"}]
 
 
 def test_first_round_has_identical_context_and_no_current_peer():
@@ -115,7 +116,7 @@ def test_first_round_has_identical_context_and_no_current_peer():
     add_result(run, 3)
     packet4 = make_packet(run, 4)
     contexts = [prompt_data(p) for p in (packet2, packet3, packet4)]
-    assert [c.pop("identity")["speaker"] for c in contexts] == ["codex", "claude_code", "grok"]
+    assert [c.pop("identity")["speaker"] for c in contexts] == ["codex", "grok", "claude_code"]
     assert contexts[0] == contexts[1] == contexts[2]
     assert "answer-1" in packet4["prompt"]
     assert "answer-2" not in packet4["prompt"]
@@ -129,7 +130,7 @@ def test_second_round_reads_full_first_round_and_same_review():
     add_result(run, 6)
     seventh = make_packet(run, 7)
     contexts = [prompt_data(p) for p in (sixth, seventh)]
-    assert [c.pop("identity")["speaker"] for c in contexts] == ["codex", "claude_code"]
+    assert [c.pop("identity")["speaker"] for c in contexts] == ["codex", "grok"]
     assert contexts[0] == contexts[1]
     assert all(f"answer-{n}" in sixth["prompt"] for n in range(1, 6))
     assert "answer-6" not in seventh["prompt"]
@@ -411,7 +412,7 @@ def test_claude_host_packet_routes_to_claude_and_limits_output(ordinal):
     packet = make_packet(run, ordinal)
     assert packet["host_provider"] == "claude_code" and packet["speaker"] == "dispatcher"
     assert packet["epoch"] == run["bridge_epochs"]["claude_code"]
-    assert "調度員與 Claude 是不同席位" in packet["prompt"]
+    assert "調度員與 Claude Code 是不同席位" in packet["prompt"]
     assert "不要加 Markdown 程式碼框" in packet["prompt"] and "3,500 bytes" in packet["prompt"]
 
 
@@ -454,8 +455,14 @@ def test_unknown_packet_field_is_still_rejected():
         validate_begin(packet)
 
 
-@pytest.mark.parametrize("first,expected", [(None, ["claude_code", "codex"]), ("", ["claude_code", "codex"]),
-                                            ("claude_code", ["claude_code", "codex"]), ("typo", ["claude_code", "codex"]),
+@pytest.mark.parametrize("first,expected", [(None, ["codex", "claude_code"]), ("", ["codex", "claude_code"]),
+                                            ("claude_code", ["claude_code", "codex"]),
                                             ("codex", ["codex", "claude_code"])])
-def test_host_order_defaults_to_claude_first(first, expected):
+def test_host_order_defaults_to_registration_order(first, expected):
     assert host_order(first) == expected
+
+
+@pytest.mark.parametrize("first", ["typo", "grok", "claude_code_api"])
+def test_host_order_rejects_unregistered_or_non_host_codes(first):
+    with pytest.raises(ValueError):
+        host_order(first)

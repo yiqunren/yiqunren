@@ -13,7 +13,7 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from app.services import cli_socket
+from app.services import adapters, cli_socket
 from app.services import turn_contract as contract
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,12 @@ POLL_SECONDS = 1.5
 CONTROL_TIMEOUT = 15
 TRANSPORT_RETRIES = 5
 DEADLINE_GRACE = 120
-LABELS = {"codex": "Codex", "claude_code": "Claude", "grok": "Kilo/Grok", "claude_code_api": "CLAUDE CODE API"}
+
+
+def label(provider: object) -> str:
+    """回合狀態與錯誤訊息裡的顯示名稱，取自轉接器登記處；未登記時只寫 worker，不帶入原值。"""
+    return adapters.get(provider).name if adapters.is_registered(provider) else "worker"
+
 
 INTERRUPTED_TEXT = "已中斷這一回合：工作者的程序已確認結束。工作區可能留有半套改動，續問前請先檢查。"
 UNKNOWN_TEXT = {
@@ -67,7 +72,7 @@ class Handle:
     def from_record(cls, record: dict) -> "Handle":
         packet = {"request_id": contract.request_id(record["request_id"]), "call_hash": record["call_hash"],
                   "timeout": contract.timeout_seconds(record["timeout"])}
-        if record.get("provider") not in contract.PROVIDERS:
+        if not adapters.is_registered(record.get("provider")):
             raise ValueError("回合紀錄的提供者無效")
         return cls(record["provider"], packet, contract.request_id(record["epoch"]), float(record["started_at"]))
 
@@ -108,16 +113,12 @@ async def tracked(key: str | None, *, timeout: int = contract.TIMEOUT_DEFAULT, o
 
 
 def socket_path(provider: str) -> str:
-    if provider == "claude_code_api":
-        from app.services.claude_api_bridge import SOCKET_PATH
-        return SOCKET_PATH
-    from app.services import claude_bridge, codex_bridge, grok_bridge
-    return {"codex": codex_bridge.SOCKET_PATH, "claude_code": claude_bridge.SOCKET_PATH,
-            "grok": grok_bridge.SOCKET_PATH}[provider]
+    """橋接 socket 位置由轉接器登記處決定（可用環境變數覆寫）；未登記的提供者拋 ValueError。"""
+    return adapters.socket_path(provider)
 
 
 async def _send(provider: str, payload: dict) -> dict:
-    return await cli_socket.request(socket_path(provider), payload, timeout=CONTROL_TIMEOUT, label=LABELS[provider])
+    return await cli_socket.request(socket_path(provider), payload, timeout=CONTROL_TIMEOUT, label=label(provider))
 
 
 def _check(reply, handle_or_packet) -> dict:
@@ -125,14 +126,17 @@ def _check(reply, handle_or_packet) -> dict:
     try:
         return contract.validate_reply(reply, packet)
     except ValueError:
-        raise RuntimeError(f"Invalid response from {LABELS.get(packet.get('provider', ''), 'worker')} bridge") from None
+        raise RuntimeError(f"Invalid response from {label(packet.get('provider'))} bridge") from None
 
 
-async def run(provider: str, fields: dict, *, on_progress=None) -> dict:
-    """送出一回合並等到結束；回傳橋接的結果 dict（與舊同步回覆相同欄位），由各提供者的用戶端再驗。"""
+async def run(provider: str, fields: dict, *, auth_mode: str, on_progress=None) -> dict:
+    """送出一回合並等到結束；回傳橋接的結果 dict（與舊同步回覆相同欄位），由各提供者的用戶端再驗。
+
+    auth_mode 是該成員選的認證模式（FR-1），必須是轉接器登記過的模式。
+    """
     track = TRACK.get()
     timeout = track.timeout if track is not None else contract.TIMEOUT_DEFAULT
-    packet = contract.begin_packet(provider, str(uuid.uuid4()), fields, timeout)
+    packet = contract.begin_packet(provider, str(uuid.uuid4()), fields, timeout, auth_mode=auth_mode)
     reply = await _send(provider, packet)
     epoch, turn = _check(reply, packet)
     handle = Handle(provider, packet, epoch, time.time(), stop_on_cancel=bool(track and track.stop_on_cancel))
@@ -184,7 +188,7 @@ async def observe(handle: Handle, turn: dict | None = None, *, on_progress=None)
                     raise TurnUnknown("result_taken")
                 return turn["result"]
             if state == "failed":
-                raise RuntimeError(turn["error"] or f"{LABELS[handle.provider]} bridge failed")
+                raise RuntimeError(turn["error"] or f"{label(handle.provider)} bridge failed")
             if state == "stopped":
                 raise TurnInterrupted(INTERRUPTED_TEXT)
             if state == "unknown":

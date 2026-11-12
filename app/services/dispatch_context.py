@@ -10,12 +10,12 @@ import math
 import re
 from datetime import datetime
 
+from app.services import adapters
 from app.services.consultants.profiles import PROFILES
 
 VERSION = 1
 MAX_BYTES = 1500
 LOW_PERCENT = 10  # 與群聊已部署的週額度門檻相同
-WORKERS = ("codex", "claude_code", "grok")
 STATUSES = ("ok", "low", "unknown")
 MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,103}")
 EFFORT_ID = re.compile(r"[A-Za-z0-9._-]{1,40}")
@@ -54,7 +54,8 @@ def validate_context(value: object) -> dict:
     if type(value["v"]) is not int or value["v"] != VERSION or not _timestamp(value["as_of"]):
         raise ValueError("調度現況版本或時間無效")
     workers = value["workers"]
-    if not isinstance(workers, dict) or set(workers) != set(WORKERS):
+    # 工作者＝轉接器登記處目前登記的每一家；多一家、少一家都拒絕。
+    if not isinstance(workers, dict) or set(workers) != set(adapters.codes()):
         raise ValueError("調度現況工作者無效")
     for row in workers.values():
         if (not isinstance(row, dict) or set(row) != {"model", "effort", "configured", "weekly"}

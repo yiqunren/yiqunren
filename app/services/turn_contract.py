@@ -9,21 +9,17 @@ import hashlib
 import json
 from uuid import UUID
 
-TURN_PROTOCOL = 1
+from app.services import adapters
+
+# 2：turn_begin 加上 auth_mode（FR-1 認證模式），fields 依模式而定。
+TURN_PROTOCOL = 2
 ACTION_BEGIN = "turn_begin"
 ACTION_STATUS = "turn_status"
 ACTION_STOP = "turn_stop"
 ACTION_ACK = "turn_ack"
 CONTROL_ACTIONS = (ACTION_STATUS, ACTION_STOP, ACTION_ACK)
 
-PROVIDERS = ("codex", "claude_code", "grok", "claude_code_api")
-# 每個提供者 turn_begin 的 fields 欄位；與既有同步私聊請求相同，只是包進 fields。
-FIELD_KEYS = {
-    "codex": frozenset({"message", "thread_id", "workspace", "model", "effort"}),
-    "claude_code": frozenset({"message", "session_id", "workspace", "model", "effort"}),
-    "grok": frozenset({"message", "session_id", "workspace", "model", "effort"}),
-    "claude_code_api": frozenset({"message", "session_id", "workspace", "model", "effort", "max_budget_usd"}),
-}
+# 提供者（轉接器）清單、各自支援的認證模式與 turn_begin 的 fields 欄位都由轉接器登記處提供（app/services/adapters.py）。
 
 # 單回合逾時：每位工作者的設定（秒）。預設 15 分鐘、上限 60 分鐘；橋接可用環境變數再壓低上限。
 TIMEOUT_MIN = 60
@@ -67,22 +63,26 @@ def timeout_seconds(value, maximum: int = TIMEOUT_MAX) -> int:
     return value
 
 
-def begin_packet(provider: str, key: str, fields: dict, timeout: int) -> dict:
-    packet = {"action": ACTION_BEGIN, "protocol": TURN_PROTOCOL, "provider": provider,
+def begin_packet(provider: str, key: str, fields: dict, timeout: int, *, auth_mode: str) -> dict:
+    packet = {"action": ACTION_BEGIN, "protocol": TURN_PROTOCOL, "provider": provider, "auth_mode": auth_mode,
               "request_id": key, "timeout": timeout, "fields": dict(fields)}
     packet["call_hash"] = call_hash(packet)
     return validate_begin(packet, provider)
 
 
 def validate_begin(packet, provider: str, maximum: int = TIMEOUT_MAX) -> dict:
-    keys = {"action", "protocol", "provider", "request_id", "timeout", "fields", "call_hash"}
+    keys = {"action", "protocol", "provider", "auth_mode", "request_id", "timeout", "fields", "call_hash"}
     if not isinstance(packet, dict) or set(packet) != keys or packet["action"] != ACTION_BEGIN:
         raise ValueError("回合封包欄位無效")
-    if packet["protocol"] != TURN_PROTOCOL or packet["provider"] != provider or provider not in PROVIDERS:
+    if (packet["protocol"] != TURN_PROTOCOL or packet["provider"] != provider
+            or not adapters.is_registered(provider)):
         raise ValueError("回合封包版本或提供者不符")
+    adapter = adapters.get(provider)
+    if not isinstance(packet["auth_mode"], str) or packet["auth_mode"] not in adapter.auth_modes:
+        raise ValueError("回合封包認證模式不符")
     request_id(packet["request_id"])
     timeout_seconds(packet["timeout"], maximum)
-    if not isinstance(packet["fields"], dict) or set(packet["fields"]) != FIELD_KEYS[provider]:
+    if not isinstance(packet["fields"], dict) or set(packet["fields"]) != adapter.fields_for(packet["auth_mode"]):
         raise ValueError("回合封包欄位無效")
     if packet["call_hash"] != call_hash(packet):
         raise ValueError("回合封包指紋不符")

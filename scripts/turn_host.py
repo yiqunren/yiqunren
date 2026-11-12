@@ -21,6 +21,7 @@ import sys
 import time
 import uuid
 
+from app.services import adapters
 from app.services import turn_contract as contract
 from app.services.write_ownership import configured_registry
 from scripts import private_cli, workspace_fingerprint
@@ -64,7 +65,8 @@ async def _settled(function, *args):
 
 
 class TurnHost:
-    """validate(fields) 回傳已驗證的 fields（或拋 ValueError）；run(fields, progress, guard) 執行一回合並回傳結果 dict。
+    """validate(fields, auth_mode) 回傳已驗證的 fields（或拋 ValueError）；run(fields, progress, guard) 執行一回合並回傳結果 dict。
+    auth_mode 已由 turn_contract 核對為該轉接器登記過的認證模式；橋接要用它時，自行放進 validate 的回傳值交給 run。
 
     guard(project, holder, operation, ttl) 與 write_ownership.guarded_write 同形狀，由各橋接在想要的時點呼叫
     （Grok 在 Kilo 鎖內、模型目錄核對之後才申請，與同步路徑相同）。
@@ -72,7 +74,7 @@ class TurnHost:
 
     def __init__(self, provider, *, validate, run, maximum=contract.TIMEOUT_MAX, invalid="Invalid request",
                  failed="Bridge failed", clock=time.monotonic):
-        if provider not in contract.PROVIDERS:
+        if not adapters.is_registered(provider):
             raise ValueError("未知的回合提供者")
         self.provider, self.validate, self.run = provider, validate, run
         self.maximum, self.invalid, self.failed, self.clock = maximum, invalid, failed, clock
@@ -111,7 +113,7 @@ class TurnHost:
             if existing["call_hash"] != packet["call_hash"]:
                 raise ValueError("同一回合識別的內容不同")
             return self._reply(existing, 0)
-        fields = self.validate(dict(packet["fields"]))
+        fields = self.validate(dict(packet["fields"]), packet["auth_mode"])
         self._prune()
         call = {"request_id": key, "call_hash": packet["call_hash"], "timeout": packet["timeout"],
                 "state": "running", "error": None, "result": None, "acked": False, "stop_requested": False,

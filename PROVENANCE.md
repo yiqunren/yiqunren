@@ -13,6 +13,15 @@
     - 程序物件屬性名：`_panelroom_output_tails`
     - 測試的暫存目錄前綴與假持有者名稱
   - 影響的檔案共六個：`app/services/write_ownership.py`、`app/services/worker_turn.py`、`scripts/host_diagnostics.py`、`scripts/private_cli.py`、`tests/test_write_ownership.py`、`tests/test_host_diagnostics.py`。這六個檔案現在的 SHA-256 和各小節記的「匯入後 SHA-256」不同。
+- 2026-11-12：實作 SPEC NFR-7 的轉接器登記處（新檔 `app/services/adapters.py`，本 repo 自寫，不列在本檔）。寫死的轉接器清單改成從登記處取得：
+  - `app/services/turn_contract.py`：移除 `PROVIDERS`、`FIELD_KEYS`；`claude_code_api` 不再算獨立一家（API key 是 `claude_code` 的認證模式）。`turn_begin` 加上 `auth_mode`，`TURN_PROTOCOL` 升為 2，fields 依認證模式而定（`max_budget_usd` 改為 `claude_code` API key 模式的專屬欄位）。
+  - `scripts/turn_host.py`：提供者檢查改查登記處；橋接的 `validate` 回呼多收 `auth_mode`。
+  - `app/services/dispatch_context.py`：移除 `WORKERS`（`dispatch_context.py` 小節備註提到的寫死三家已處理）。
+  - `app/services/dispatcher_guidance.py`：`WORKER_CAPABILITIES` 改成 `worker_capabilities()`；提示詞的工作者清單與模型等級由登記處產生。
+  - `app/services/discussion_contract.py`：`SPEAKERS`、`ORDER`、`NAMES`、`MAX_CALLS`、`PACKET_HOSTS` 改成依登記處計算的函式；發言者與順序依本場參與名單計算（SPEC FR-3，2N+3 格），有選名單的場次封包帶 `participants`；`CLAUDE_HOST_FORMAT` 改名為 `PROMPT_HOST_FORMAT`；主持人預設順序改為登記順序，主持人設定可為有順序的代號清單，未登記代號一律拒絕。
+  - `app/services/worker_turn.py`：`LABELS` 改成 `label()`；`socket_path()` 改由登記處決定（`worker_turn.py` 小節備註提到的橋接模組 import 已移除）；`run()` 多收 `auth_mode`。
+  - `scripts/host_diagnostics.py`：錯誤分類改依登記的規則；未登記的代號不寫診斷檔。
+  - `tests/test_discussion_contract.py`：預設順序改為 Codex、Grok、Claude Code，顯示名稱 Claude → Claude Code，主持人預設改為登記順序，`typo` 由退回預設改為拒絕。
 
 ## 第一批共同事項（2026-11-12）
 

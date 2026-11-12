@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 
+from app.services import adapters
 from app.services.consultants.profiles import PROFILES
 from app.services.dispatch_context import validate_context
 
@@ -33,27 +34,23 @@ DISPATCH_PRINCIPLES = """你是務實的調度員，負責讓使用者的目標�
 使用上述工程判斷方式，保持獨立、好奇與克制；不模仿真人身分或口吻，
 不把任何人的名聲當成方案正確的依據。"""
 
-# 描述本專案的工作方式；不代表各供應商的普遍強弱或測得的品質。
-WORKER_CAPABILITIES = {
-    "codex": {
-        "name": "Codex",
-        "strengths": ["程式碼與檔案修改", "依現有程式追蹤資料流", "執行獲准的本機驗證"],
-        "weaknesses": ["缺需求、程式或環境證據時不能證明根因", "文字回報不能代替實際驗證", "不共享其他 AI 的工作區"],
-        "choose_when": "任務以既有程式與可執行驗證為核心，且相關內容能在此工作區取得。",
-    },
-    "claude_code": {
-        "name": "Claude Code",
-        "strengths": ["程式碼與檔案修改", "文字撰寫及結構整理", "綜合已提供的材料"],
-        "weaknesses": ["缺來源時不能補造事實或引用", "整理得完整不代表主張正確", "不共享其他 AI 的工作區"],
-        "choose_when": "任務需要程式實作或文件整理，且材料與專案上下文已在此工作區。",
-    },
-    "grok": {
-        "name": "Grok",
-        "strengths": ["獨立工作區中的檔案與文件處理", "分析已提供的資料", "依明確問題提出另一種解釋"],
-        "weaknesses": ["未確認資料來源不能宣稱掌握即時資訊", "另一個 AI 的意見不等於獨立來源", "不共享其他 AI 的工作區"],
-        "choose_when": "需要此工作區的材料或另一條可核對的分析路徑，且已設定可用模型。",
-    },
-}
+def worker_capabilities() -> dict:
+    """工作者能力目錄，由轉接器登記處產生；描述本專案的工作方式，不代表各供應商的普遍強弱或測得的品質。"""
+    return {entry.code: {"name": entry.name, "strengths": list(entry.strengths),
+                         "weaknesses": list(entry.weaknesses), "choose_when": entry.choose_when}
+            for entry in adapters.adapters()}
+
+
+def model_tier_guidance() -> str:
+    """各工作者的 model_tier 對應；沒登記模型等級的轉接器只說沿用使用者設定，不出現模型名稱。"""
+    parts = []
+    for entry in adapters.adapters():
+        if entry.model_tiers is None:
+            parts.append(f"{entry.name} 沿用使用者已設定的模型與推理強度，不宣稱已選到較輕量的模型")
+        else:
+            note = f"，{entry.tier_note}" if entry.tier_note else ""
+            parts.append(f"{entry.name} 配置對應 {'／'.join(entry.model_tiers)}{note}")
+    return "；".join(parts) + "。"
 
 
 def consultant_capabilities() -> list[dict]:
@@ -73,7 +70,7 @@ def capability_guidance() -> str:
     consultants = [{key: row[key] for key in (
         "slug", "name", "mission", "thinking_preference", "weaknesses", "required_inputs")}
         for row in consultant_capabilities()]
-    catalog = {"workers": WORKER_CAPABILITIES, "consultants": consultants}
+    catalog = {"workers": worker_capabilities(), "consultants": consultants}
     return ("\n能力目錄是本專案的角色設計，尚未提供模型品質比較或即時啟用狀態。"
             "顧問只提供文字建議，不讀檔、不查網路、不執行工作；使用者提供資料才可分析。"
             "顧問弱點含缺資料與專業適用邊界；需要的資料未齊時不能假裝已完成專業判斷。\n"
@@ -122,7 +119,7 @@ def build_route_prompt(message: str, history: list[dict], *, auto_arrange: bool 
     situation = context_guidance(context) if context is not None else ""
     return (DISPATCH_PRINCIPLES + capability_guidance() + mode + situation
         + "\n此入口只釐清需求與建議派工，不能執行任務、使用工具或聲稱已完成工作。"
-        "只輸出符合 schema 的 JSON。可執行工作者僅有 codex、claude_code、grok；"
+        "只輸出符合 schema 的 JSON。可執行工作者僅有 " + "、".join(adapters.codes()) + "；"
         "顧問組合填 advisors，沒有推薦時填 []；不能將顧問放進工作者 steps。"
         "每位填 consultant_slug、role（lead 主責、reviewer 反證檢查、support 專項支援）、"
         "task、reason（此人補上哪個獨有缺口）、inputs（需提供的資料，已足夠可填 []）、"
@@ -153,9 +150,7 @@ def build_route_prompt(message: str, history: list[dict], *, auto_arrange: bool 
         "standard 用於一般程式修改與多條件分析，配置一般模型與中強度；"
         "deep 僅用於困難推理、複雜架構或難定位的問題，須說明具體需要。"
         "檢查者不因角色名稱或是第二步就升級；豆漿、吐司、蛋的價格加總與核對兩步皆用 light。"
-        "Codex 配置對應 Luna Max／Sol Medium／Astra High，Luna 只能搭配 Max；"
-        "Claude 配置對應 Sonnet Low／Sonnet Medium／Opus High，最低模型為 Sonnet，不使用 Haiku；"
-        "Grok 沿用使用者已設定的 xAI 模型與 variant，不宣稱已選到較輕量的模型。"
+        + model_tier_guidance() +
         "頂層 agent_slug 等於第一步工作者。簡單工作用一步；第二步只在有必要且具體的交接價值時使用。"
         "第二步只能收到第一步的文字成果，不共享檔案或工作區；不要安排依賴跨工作區檔案的步驟。"
         "第二步應檢查第一步成果並產出可直接交付的完整結果，其完成條件須涵蓋使用者目標。"

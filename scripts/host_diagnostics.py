@@ -9,7 +9,9 @@
 - 不經 socket 回傳、不進 App 或資料庫；對外只多一句「診斷 ID」，讓擁有者找到檔案。
 - stdout 只取 JSON 事件的類型名稱（固定格式），不寫回覆正文；stderr 與 argv 先遮罩再寫。
 - 群聊回覆被判無效時，只多記回覆的形狀與位元組數（`reply_shape`），同樣不寫正文。
-- Claude 另外記錯誤類別（`claude_error_class`）：只取事件裡的固定欄位，分得出額度、認證與 API 錯誤，同樣不寫正文。
+- 轉接器登記處有登記錯誤分類規則的，另外記錯誤類別（例如 Claude Code 的 `claude_error_class`）：
+  只取事件裡的固定欄位，分得出額度、認證與 API 錯誤，同樣不寫正文。
+- 只為已登記的轉接器寫診斷檔；未登記的代號回傳 None。
 - 任何寫入失敗都回傳 None，不影響原本的錯誤處理。
 """
 from __future__ import annotations
@@ -22,6 +24,8 @@ import secrets
 import shlex
 import stat
 import time
+
+from app.services import adapters
 
 DIAG_ENV = "PANELROOM_DIAG_DIR"
 RETENTION_SECONDS = 7 * 24 * 3600
@@ -134,6 +138,10 @@ def claude_error_class(stdout_tail: bytes) -> str:
     return " ".join(f"{name}={value}" for name, value in found.items())
 
 
+# 轉接器登記的 error_class_rule → 分類函式；名稱須與 adapters.ERROR_CLASS_RULES 一致。
+ERROR_CLASS_RULES = {"claude_events": claude_error_class}
+
+
 def reply_shape(content) -> str:
     """描述回覆的形狀而不含正文，讓 reply_invalid 分得出不是文字、無法編碼、空白與超過上限。"""
     if not isinstance(content, str):
@@ -172,8 +180,9 @@ def record(provider: str, *, process, argv, reason: str, started: float,
     detail 只接受固定代碼形狀（例如群聊的 cli_error_event）；reply 只接受 reply_shape 的輸出；其他值不寫入。
     """
     try:
-        if not _PROVIDER.fullmatch(provider) or reason not in _REASONS:
+        if not _PROVIDER.fullmatch(provider) or not adapters.is_registered(provider) or reason not in _REASONS:
             return None
+        rule = adapters.get(provider).error_class_rule
         directory = (root or diag_root()) / provider
         _private_dir(directory.parent)
         _private_dir(directory)
@@ -183,7 +192,7 @@ def record(provider: str, *, process, argv, reason: str, started: float,
         stdout_tail = bytes(tails.get("stdout", b""))[-TAIL_LIMIT:]
         stderr_tail = bytes(tails.get("stderr", b""))[-TAIL_LIMIT:]
         events = event_types(stdout_tail)
-        error_class = claude_error_class(stdout_tail) if provider == "claude_code" else ""
+        error_class = ERROR_CLASS_RULES[rule](stdout_tail) if rule else ""
         exit_code = getattr(process, "returncode", None)
         identifier = secrets.token_hex(6)
         stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime(now))
