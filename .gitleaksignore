@@ -1,0 +1,13 @@
+# gitleaks 忽略清單：只列已確認為假值的測試資料，不列真的機密。
+# tests/test_host_diagnostics.py 的遮罩測試刻意放了假的 AWS 金鑰樣式（AKIA 開頭加 A 到 P 的連續字母）
+# 與捏造的 JWT（{"alg":"HS256"}／{"sub":"1234567890"}），用來確認 mask() 會遮掉它們。
+
+# 掃 Git 歷史（gitleaks git）
+8364f2f2acb0f26b805df13b23a3c6eec0edef5e:tests/test_host_diagnostics.py:jwt:24
+8364f2f2acb0f26b805df13b23a3c6eec0edef5e:tests/test_host_diagnostics.py:aws-access-token:27
+8364f2f2acb0f26b805df13b23a3c6eec0edef5e:tests/test_host_diagnostics.py:aws-access-token:32
+
+# 掃工作目錄（gitleaks dir）；這三行的行號變動時要跟著更新
+tests/test_host_diagnostics.py:jwt:24
+tests/test_host_diagnostics.py:aws-access-token:27
+tests/test_host_diagnostics.py:aws-access-token:32
