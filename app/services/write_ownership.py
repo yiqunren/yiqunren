@@ -20,7 +20,7 @@ class OwnershipError(RuntimeError):
 
 
 def configured_registry():
-    return WriteRegistry(Path(os.environ.get('PANELROOM_WRITE_REGISTRY', str(DEFAULT_REGISTRY))))
+    return WriteRegistry(Path(os.environ.get('YIQUNREN_WRITE_REGISTRY', str(DEFAULT_REGISTRY))))
 
 
 def _plain(value, label):

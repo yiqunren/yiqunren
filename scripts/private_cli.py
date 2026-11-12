@@ -14,7 +14,7 @@ TERMINATE_GRACE = 5
 OUTPUT_LIMIT = 2_000_000
 # 非同步回合（scripts/turn_host.py）在自己的 task 內設定這一回合的逾時秒數；
 # communicate_private 以它取代橋接模組的 TIMEOUT_SECONDS。舊的同步私聊沒有設定，行為不變。
-TURN_TIMEOUT: contextvars.ContextVar[int | None] = contextvars.ContextVar("panelroom_turn_timeout", default=None)
+TURN_TIMEOUT: contextvars.ContextVar[int | None] = contextvars.ContextVar("yiqunren_turn_timeout", default=None)
 STOP_UNCONFIRMED = '私聊 CLI 停止狀態未知'
 
 
@@ -35,7 +35,7 @@ class ProcessTally:
 
 
 TURN_PROCESSES: contextvars.ContextVar[ProcessTally | None] = contextvars.ContextVar(
-    "panelroom_turn_processes", default=None)
+    "yiqunren_turn_processes", default=None)
 
 
 def _tail_buffer(process, name):

@@ -25,6 +25,14 @@
 - 2026-11-12：只改註解與說明文字，不影響行為。
   - `scripts/turn_host.py`：模組說明與 `EndedBeforeWork` 說明裡提到尚未匯入的 `_run_codex`／`_run_claude`／`_run_request`、`claude_host_bridge._no_work_done`，改成不指名這些橋接內部名稱。
   - `app/services/discussion_contract.py`：`_host_json` 說明改成依 `host_output="prompt"` 描述，不寫死 Claude。
+- 2026-11-12：產品名稱由 Panelroom 改為 Yiqunren（SPEC 第 1 節），所以再改一次名稱。
+  - 環境變數前綴：`PANELROOM_` → `YIQUNREN_`
+  - 狀態目錄名：`panelroom` → `yiqunren`
+  - 程式內部識別字裡的 `panelroom` 一起改成 `yiqunren`：
+    - contextvar 名稱：`yiqunren_worker_turn`、`yiqunren_turn_timeout`、`yiqunren_turn_processes`
+    - 程序物件屬性名：`_yiqunren_output_tails`
+    - 測試的暫存目錄前綴與假持有者名稱
+  - 影響的匯入檔案同上一次改名的六個：`app/services/write_ownership.py`、`app/services/worker_turn.py`、`scripts/host_diagnostics.py`、`scripts/private_cli.py`、`tests/test_write_ownership.py`、`tests/test_host_diagnostics.py`。
 
 ## 第一批共同事項（2026-11-12）
 

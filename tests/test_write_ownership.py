@@ -25,7 +25,7 @@ def race_claim(database, project, start, results):
 
 class OwnershipTest(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix='panelroom-write-test-')
+        self.temporary = tempfile.TemporaryDirectory(prefix='yiqunren-write-test-')
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.project = self.root / 'project'
@@ -125,7 +125,7 @@ class OwnershipTest(unittest.TestCase):
             results.join_thread()
 
     def test_cli_records_and_conflict_exit_status(self):
-        env = {**os.environ, 'PANELROOM_WRITE_REGISTRY': str(self.path)}
+        env = {**os.environ, 'YIQUNREN_WRITE_REGISTRY': str(self.path)}
         command = [sys.executable, '-B', 'scripts/write_ownership.py']
         args = ['claim', '--project', str(self.project), '--files', 'a.txt', '--holder', 'cli', '--ttl', '20']
         first = subprocess.run(command + args, capture_output=True, text=True, env=env)
@@ -139,7 +139,7 @@ class OwnershipTest(unittest.TestCase):
 
 class GuardTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix='panelroom-write-guard-')
+        self.temporary = tempfile.TemporaryDirectory(prefix='yiqunren-write-guard-')
         self.addCleanup(self.temporary.cleanup)
         self.project = Path(self.temporary.name) / 'project'
         self.project.mkdir()
@@ -154,7 +154,7 @@ class GuardTest(unittest.IsolatedAsyncioTestCase):
             started.set()
             await finish.wait()
             return 'done'
-        task = asyncio.create_task(guarded_write(self.project, 'panelroom', first))
+        task = asyncio.create_task(guarded_write(self.project, 'yiqunren', first))
         await started.wait()
         invoked = False
         async def second():
@@ -173,17 +173,17 @@ class GuardTest(unittest.IsolatedAsyncioTestCase):
         async def failed():
             raise RuntimeError('fake failure')
         with self.assertRaises(RuntimeError):
-            await guarded_write(self.project, 'panelroom', failed)
+            await guarded_write(self.project, 'yiqunren', failed)
         self.assertEqual(WriteRegistry(self.registry.path).list()[0]['state'], 'unknown')
         with self.assertRaises(OwnershipError):
-            await guarded_write(self.project, 'panelroom', failed)
+            await guarded_write(self.project, 'yiqunren', failed)
         lease = self.registry.list()[0]
-        self.registry.change(lease['lease_id'], 'panelroom', 'resolve', stopped=True)
+        self.registry.change(lease['lease_id'], 'yiqunren', 'resolve', stopped=True)
         entered = asyncio.Event()
         async def running():
             entered.set()
             await asyncio.Event().wait()
-        task = asyncio.create_task(guarded_write(self.project, 'panelroom', running))
+        task = asyncio.create_task(guarded_write(self.project, 'yiqunren', running))
         await entered.wait()
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):

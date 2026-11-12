@@ -184,12 +184,12 @@ def override(entries):
 
 
 def socket_env(code: str) -> str:
-    return f"PANELROOM_{get(code).code.upper()}_SOCKET"
+    return f"YIQUNREN_{get(code).code.upper()}_SOCKET"
 
 
 def socket_path(code: str) -> str:
-    """連到轉接器橋接的本機 socket：環境變數 PANELROOM_<CODE>_SOCKET（絕對路徑）優先；
-    否則 $XDG_RUNTIME_DIR/panelroom/<socket_name>，沒有 XDG_RUNTIME_DIR 時用 ~/.local/state/panelroom/run/。"""
+    """連到轉接器橋接的本機 socket：環境變數 YIQUNREN_<CODE>_SOCKET（絕對路徑）優先；
+    否則 $XDG_RUNTIME_DIR/yiqunren/<socket_name>，沒有 XDG_RUNTIME_DIR 時用 ~/.local/state/yiqunren/run/。"""
     entry = get(code)
     name = socket_env(entry.code)
     value = os.environ.get(name)
@@ -199,5 +199,5 @@ def socket_path(code: str) -> str:
         return value
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     if runtime and Path(runtime).is_absolute():
-        return str(Path(runtime) / "panelroom" / entry.socket_name)
-    return str(Path.home() / ".local" / "state" / "panelroom" / "run" / entry.socket_name)
+        return str(Path(runtime) / "yiqunren" / entry.socket_name)
+    return str(Path.home() / ".local" / "state" / "yiqunren" / "run" / entry.socket_name)

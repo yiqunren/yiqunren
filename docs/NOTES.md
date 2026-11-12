@@ -9,8 +9,8 @@
 
 ## 尚未寫進其他文件的待辦
 
-1. 改成公開或商用前，到美國 USPTO 與台灣智慧財產局查「Panelroom」商標，並考慮註冊。
-2. 查 `panelroom` 的 GitHub 帳號名與常見網域是否可用（之前提過，還沒查）。
+1. 產品名稱 Yiqunren（議群人）已初步自查（2026-11-12）：USPTO 的 `yiqunren` 全類別無紀錄；智慧局 009／042 類無相同或近似；GitHub、PyPI、npm 名稱無人使用。商用或申請註冊前，仍需請商標代理人正式檢索，並考慮註冊。
+2. GitHub 組織 `yiqunren` 已建立（2026-11-12）；repo 尚未轉移與改名。常見網域是否可用還沒查。
 3. 舊專案的公開候選資料夾裡，有 Codex 生成的 SVG 素材與 `scripts/build_public_assets.py`，列為之後的候選。這要由規格側 session 照 `CLAUDE.md` 的匯入規則審查；在本 repo 工作的實作側 session 不可自己去讀舊專案。
 4. 各家 AI 服務 API 的支援地區還沒查。
 

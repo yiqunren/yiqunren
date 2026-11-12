@@ -224,29 +224,29 @@ def test_override_rejects_duplicates_or_empty_and_always_restores():
 # ---- 連線位置 ----
 
 def test_socket_path_uses_env_override_then_runtime_dir(monkeypatch):
-    monkeypatch.delenv("PANELROOM_CLAUDE_CODE_SOCKET", raising=False)
+    monkeypatch.delenv("YIQUNREN_CLAUDE_CODE_SOCKET", raising=False)
     monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/4242")
-    assert adapters.socket_env("claude_code") == "PANELROOM_CLAUDE_CODE_SOCKET"
-    assert worker_turn.socket_path("claude_code") == "/run/user/4242/panelroom/claude_code.sock"
-    monkeypatch.setenv("PANELROOM_CLAUDE_CODE_SOCKET", "/srv/sockets/claude.sock")
+    assert adapters.socket_env("claude_code") == "YIQUNREN_CLAUDE_CODE_SOCKET"
+    assert worker_turn.socket_path("claude_code") == "/run/user/4242/yiqunren/claude_code.sock"
+    monkeypatch.setenv("YIQUNREN_CLAUDE_CODE_SOCKET", "/srv/sockets/claude.sock")
     assert worker_turn.socket_path("claude_code") == "/srv/sockets/claude.sock"
-    monkeypatch.setenv("PANELROOM_CLAUDE_CODE_SOCKET", "relative/claude.sock")
+    monkeypatch.setenv("YIQUNREN_CLAUDE_CODE_SOCKET", "relative/claude.sock")
     with pytest.raises(ValueError):
         worker_turn.socket_path("claude_code")
 
 
 def test_socket_path_without_runtime_dir_falls_back_under_home(monkeypatch, tmp_path):
-    monkeypatch.delenv("PANELROOM_CODEX_SOCKET", raising=False)
+    monkeypatch.delenv("YIQUNREN_CODEX_SOCKET", raising=False)
     monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
-    assert worker_turn.socket_path("codex") == str(tmp_path / ".local/state/panelroom/run/codex.sock")
+    assert worker_turn.socket_path("codex") == str(tmp_path / ".local/state/yiqunren/run/codex.sock")
 
 
 def test_registered_socket_name_is_used(monkeypatch):
     monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/4242")
-    monkeypatch.delenv("PANELROOM_TESTBOT_SOCKET", raising=False)
+    monkeypatch.delenv("YIQUNREN_TESTBOT_SOCKET", raising=False)
     with with_testbot(socket_name="bot-bridge.sock"):
-        assert worker_turn.socket_path("testbot") == "/run/user/4242/panelroom/bot-bridge.sock"
+        assert worker_turn.socket_path("testbot") == "/run/user/4242/yiqunren/bot-bridge.sock"
 
 
 # ---- 驗收：登記一個測試用的轉接器之後，各行為都看得到它 ----

@@ -240,14 +240,14 @@ def test_failure_appends_the_id_only_when_a_file_was_written(tmp_path):
 
 
 def test_diag_root_uses_absolute_override_only(monkeypatch, tmp_path):
-    monkeypatch.setenv("PANELROOM_DIAG_DIR", str(tmp_path / "diag"))
+    monkeypatch.setenv("YIQUNREN_DIAG_DIR", str(tmp_path / "diag"))
     assert host_diagnostics.diag_root() == tmp_path / "diag"
-    monkeypatch.setenv("PANELROOM_DIAG_DIR", "relative/diag")
+    monkeypatch.setenv("YIQUNREN_DIAG_DIR", "relative/diag")
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    assert host_diagnostics.diag_root() == tmp_path / "state" / "panelroom" / "diag"
-    monkeypatch.delenv("PANELROOM_DIAG_DIR")
+    assert host_diagnostics.diag_root() == tmp_path / "state" / "yiqunren" / "diag"
+    monkeypatch.delenv("YIQUNREN_DIAG_DIR")
     monkeypatch.delenv("XDG_STATE_HOME")
-    assert host_diagnostics.diag_root() == Path.home() / ".local" / "state" / "panelroom" / "diag"
+    assert host_diagnostics.diag_root() == Path.home() / ".local" / "state" / "yiqunren" / "diag"
 
 
 def spawn(script):

@@ -1,4 +1,4 @@
-# Panelroom — 獨立重寫（clean-room）的新專案
+# Yiqunren（議群人）— 獨立重寫（clean-room）的新專案
 
 目標：做一個可採用開源、可商用授權的多 AI 辦公室。本專案的程式碼、文件與素材必須是獨立撰寫，或來自允許商用與再散布的第三方來源。
 
@@ -35,8 +35,8 @@
 - 匯入日期：YYYY-MM-DD
 - 匯入方式：整檔複製／刪減／替換（可複選；刪減時寫明刪掉什麼）
 - 替換清單：<每處一行：行號、原值類別（個人路徑／帳號／私人專案名稱／舊產品名）、替換成什麼；沒有替換寫「無」>
-  - 例：L42，個人路徑 → 環境變數 `PANELROOM_WORKSPACE`
-  - 例：L88，舊產品名 → `panelroom`
+  - 例：L42，個人路徑 → 環境變數 `YIQUNREN_WORKSPACE`
+  - 例：L88，舊產品名 → `yiqunren`
 - 原檔 SHA-256：<值>
 - 匯入後 SHA-256：<值>
 - 三項檢查：
@@ -57,7 +57,7 @@
 ## 執行環境
 
 - 開發時不碰正式的 AI 辦公室：不使用 8001 與 8101 埠，不連它的資料庫、socket 或 Docker 容器與 volume。
-- Docker／compose 的 project、容器與 volume 名稱一律以 `panelroom` 開頭。
+- Docker／compose 的 project、容器與 volume 名稱一律以 `yiqunren` 開頭。
 
 ## Git
 
