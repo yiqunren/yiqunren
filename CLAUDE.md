@@ -61,6 +61,6 @@
 
 ## Git
 
-- 第一次 commit 前，要先把本 repo 的 `git config user.email` 設成 GitHub noreply 地址（目前尚未設定）；不要用全域的個人 email。
+- 本 repo 的 `git config user.email` 與 `user.name` 已設成 GitHub noreply 地址與帳號名（只設在本 repo 的本地設定）；不要改用全域的個人 email 或真名。換電腦或重新 clone 時要重新設定。
 - commit 內容不得出現個人路徑（`/home/<使用者>`）、私人專案名稱或憑證。
 - 先推到 private repo，做完機密掃描再改成 public。
