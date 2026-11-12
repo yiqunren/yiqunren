@@ -1,0 +1,19 @@
+# 機密與本機狀態
+.env
+.env.*
+!.env.example
+.local/
+.claude/settings.local.json
+
+# 依賴與建置產物
+node_modules/
+dist/
+build/
+output/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 紀錄
+*.log
