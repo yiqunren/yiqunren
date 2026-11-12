@@ -2,6 +2,18 @@
 
 本檔記錄所有從其他來源帶進本 repo 的檔案。本 repo 自己新寫的檔案不列在這裡。第三方素材與套件記在 `THIRD_PARTY_NOTICES.md`。
 
+各小節記的是**匯入當時**的狀態：替換清單裡的新名稱與「匯入後 SHA-256」都是匯入那一刻的值。之後在本 repo 的修改不回頭改這些紀錄，以 Git 歷史為準。
+
+匯入後的修改：
+- 2026-11-12：產品定名為 Panelroom，所以把匯入時替換成的暫定名稱再改一次。
+  - 環境變數前綴：`AIOFFICE_` → `PANELROOM_`
+  - 狀態目錄名：`ai-office` → `panelroom`
+  - 程式內部識別字裡的 `office` 一起改成 `panelroom`：
+    - contextvar 名稱：`panelroom_worker_turn`、`panelroom_turn_timeout`、`panelroom_turn_processes`
+    - 程序物件屬性名：`_panelroom_output_tails`
+    - 測試的暫存目錄前綴與假持有者名稱
+  - 影響的檔案共六個：`app/services/write_ownership.py`、`app/services/worker_turn.py`、`scripts/host_diagnostics.py`、`scripts/private_cli.py`、`tests/test_write_ownership.py`、`tests/test_host_diagnostics.py`。這六個檔案現在的 SHA-256 和各小節記的「匯入後 SHA-256」不同。
+
 ## 第一批共同事項（2026-11-12）
 
 - 來源：舊專案（私人），commit `10b047d9bdb05115272bcedaaa27d54264d3e94d`。匯入時該檔案與 commit 內容相同（沒有未 commit 的改動）。

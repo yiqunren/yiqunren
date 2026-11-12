@@ -82,7 +82,7 @@ class Track:
     received: bool = False
 
 
-TRACK: contextvars.ContextVar[Track | None] = contextvars.ContextVar("office_worker_turn", default=None)
+TRACK: contextvars.ContextVar[Track | None] = contextvars.ContextVar("panelroom_worker_turn", default=None)
 # 中斷鍵 → 正在觀察中的回合；私聊為 "direct:<conversation_id>"，派工為 "dispatch:<conversation_id>:<proposal_id>"。
 ACTIVE: dict[str, Handle] = {}
 

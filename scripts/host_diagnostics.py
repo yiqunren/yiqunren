@@ -3,8 +3,8 @@
 決策：失敗時保存經遮罩的 stderr 尾段與事件類型序列，
 協助查出 DNS／OAuth／CLI 版本這類根因。界線：
 
-- 只寫本機檔：`$AIOFFICE_DIAG_DIR`（絕對路徑）或 `$XDG_STATE_HOME/ai-office/diag`
-  （預設 `~/.local/state/ai-office/diag`）下的 `<provider>/<時間>-<ID>.log`；
+- 只寫本機檔：`$PANELROOM_DIAG_DIR`（絕對路徑）或 `$XDG_STATE_HOME/panelroom/diag`
+  （預設 `~/.local/state/panelroom/diag`）下的 `<provider>/<時間>-<ID>.log`；
   目錄 0700、檔案 0600，不跟隨符號連結，超過 7 天的檔案在下次寫入時刪除。
 - 不經 socket 回傳、不進 App 或資料庫；對外只多一句「診斷 ID」，讓擁有者找到檔案。
 - stdout 只取 JSON 事件的類型名稱（固定格式），不寫回覆正文；stderr 與 argv 先遮罩再寫。
@@ -23,11 +23,11 @@ import shlex
 import stat
 import time
 
-DIAG_ENV = "AIOFFICE_DIAG_DIR"
+DIAG_ENV = "PANELROOM_DIAG_DIR"
 RETENTION_SECONDS = 7 * 24 * 3600
 TAIL_LIMIT = 64 * 1024
 EVENT_LIMIT = 200
-TAIL_ATTRIBUTE = "_office_output_tails"
+TAIL_ATTRIBUTE = "_panelroom_output_tails"
 MASK = "[已遮罩]"
 _EVENT_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_.:-]{0,63}")
 _PROVIDER = re.compile(r"[a-z][a-z0-9_]{0,31}")
@@ -62,7 +62,7 @@ def diag_root() -> Path:
         return Path(value)
     state = os.environ.get("XDG_STATE_HOME")
     base = Path(state) if state and Path(state).is_absolute() else Path.home() / ".local" / "state"
-    return base / "ai-office" / "diag"
+    return base / "panelroom" / "diag"
 
 
 def tail_buffers(process) -> dict:
