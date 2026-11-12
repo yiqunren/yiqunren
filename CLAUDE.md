@@ -1,4 +1,4 @@
-# ai-office-public — 獨立重寫（clean-room）的新專案
+# Panelroom — 獨立重寫（clean-room）的新專案
 
 目標：做一個可採用開源、可商用授權的多 AI 辦公室。本專案的程式碼、文件與素材必須是獨立撰寫，或來自允許商用與再散布的第三方來源。
 
@@ -57,7 +57,7 @@
 ## 執行環境
 
 - 開發時不碰正式的 AI 辦公室：不使用 8001 與 8101 埠，不連它的資料庫、socket 或 Docker 容器與 volume。
-- Docker／compose 的 project、容器與 volume 名稱一律以 `ai-office-public` 開頭。
+- Docker／compose 的 project、容器與 volume 名稱一律以 `panelroom` 開頭。
 
 ## Git
 
