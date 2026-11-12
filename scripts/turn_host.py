@@ -1,6 +1,6 @@
 """三家私聊橋接共用的非同步工作者回合：接受後立即回覆，CLI 在橋接程序內繼續跑。
 
-- turn_begin：驗欄位後建立 asyncio task 執行既有的 _run_codex／_run_claude／_run_request，立即回 running。
+- turn_begin：驗欄位後建立 asyncio task 執行各橋接傳入的 run 回呼，立即回 running。
 - turn_status：回目前狀態、新的進度項與（完成時）回覆；查詢不延長逾時。
 - turn_stop：取消該 task；private_cli.communicate_private 會對已核對出生身分的程序群組送 SIGTERM，
   5 秒後 SIGKILL，確認群組消失才結束。確認不了時狀態為 unknown。
@@ -29,7 +29,7 @@ from scripts import private_cli, workspace_fingerprint
 class EndedBeforeWork(RuntimeError):
     """CLI 程序群組已確認結束，而且橋接能證明這一回合沒有開始工作，寫入權可以直接釋放。
 
-    Grok 的判斷是沒有輸出任何事件；Claude 見 claude_host_bridge._no_work_done。
+    判斷方式由各橋接自行決定（例如 Grok 以沒有輸出任何事件判斷）。
     """
 
 

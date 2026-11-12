@@ -171,7 +171,10 @@ def get(code: object) -> Adapter:
 
 @contextmanager
 def override(entries):
-    """暫時換掉整份登記資料（測試用；之後的擴充載入也走同一道驗證）。離開區塊時還原。"""
+    """暫時換掉整份登記資料，離開區塊時還原。僅供測試使用。
+
+    換上的資料須全是 Adapter 且代號不重複。它改的是模組層級的全域狀態，不是多執行緒安全，
+    不要在正式執行中呼叫。擴充怎麼安裝、載入，SPEC 要等做第一個功能型擴充前才補，這裡不預設。"""
     global _active
     previous, _active = _active, _checked(entries)
     try:

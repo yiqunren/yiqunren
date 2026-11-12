@@ -22,6 +22,9 @@
   - `app/services/worker_turn.py`：`LABELS` 改成 `label()`；`socket_path()` 改由登記處決定（`worker_turn.py` 小節備註提到的橋接模組 import 已移除）；`run()` 多收 `auth_mode`。
   - `scripts/host_diagnostics.py`：錯誤分類改依登記的規則；未登記的代號不寫診斷檔。
   - `tests/test_discussion_contract.py`：預設順序改為 Codex、Grok、Claude Code，顯示名稱 Claude → Claude Code，主持人預設改為登記順序，`typo` 由退回預設改為拒絕。
+- 2026-11-12：只改註解與說明文字，不影響行為。
+  - `scripts/turn_host.py`：模組說明與 `EndedBeforeWork` 說明裡提到尚未匯入的 `_run_codex`／`_run_claude`／`_run_request`、`claude_host_bridge._no_work_done`，改成不指名這些橋接內部名稱。
+  - `app/services/discussion_contract.py`：`_host_json` 說明改成依 `host_output="prompt"` 描述，不寫死 Claude。
 
 ## 第一批共同事項（2026-11-12）
 

@@ -370,7 +370,8 @@ _HOST_FENCE = re.compile(r"```[A-Za-z]*\s*")
 
 
 def _host_json(content: str) -> object:
-    """Claude 主持沒有 --output-schema，容忍外層程式碼框和 JSON 之後的文字（例如工作區規則要求的 footer）。
+    """登記為 host_output="prompt" 的主持人（例如 Claude Code）沒有 CLI 原生的 --output-schema，
+    容忍外層程式碼框和 JSON 之後的文字（例如工作區規則要求的 footer）。
     後面的文字不進發言內容；開頭多字、後面又有另一份決定都不猜，一律無效。"""
     text = content.strip()
     fence = _HOST_FENCE.match(text)
