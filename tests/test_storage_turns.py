@@ -16,11 +16,12 @@ class TurnStoreTest(unittest.TestCase):
         self.addCleanup(self.connection.close)
         self.conversation = str(uuid.uuid4())
 
-    def start(self, conversation=None):
+    def start(self, conversation=None, message='hello'):
         turn_id = str(uuid.uuid4())
         conversation = conversation or self.conversation
         result = requests.claim(self.connection, turn_id, 'private_turn', {'c': conversation, 't': turn_id},
-                                on_claim=lambda c, now: turns.insert_running(c, turn_id, conversation, 'm1', now))
+                                on_claim=lambda c, now: turns.insert_running(c, turn_id, conversation, 'm1',
+                                                                             message, now))
         self.assertEqual(result.outcome, requests.CLAIMED)
         return turn_id
 
@@ -58,7 +59,8 @@ class TurnStoreTest(unittest.TestCase):
         blocked_id = str(uuid.uuid4())
         with self.assertRaises(turns.ConversationBusy):
             requests.claim(self.connection, blocked_id, 'private_turn', {'x': 1},
-                           on_claim=lambda c, now: turns.insert_running(c, blocked_id, self.conversation, 'm1', now))
+                           on_claim=lambda c, now: turns.insert_running(c, blocked_id, self.conversation, 'm1',
+                                                                        'x', now))
         # 被擋下時請求登記一起撤銷，同一個 ID 之後還能重送。
         self.assertIsNone(self.connection.execute('SELECT 1 FROM requests WHERE id = ?', (blocked_id,)).fetchone())
         self.start(conversation=str(uuid.uuid4()))  # 其他對話不受影響
@@ -72,6 +74,51 @@ class TurnStoreTest(unittest.TestCase):
         with self.assertRaises(Exception):
             self.connection.execute("INSERT INTO turns (id, conversation_id, member, state, started)"
                                     " VALUES (?, ?, 'm1', 'running', 1)", (other, self.conversation))
+
+    def test_message_is_stored_and_conversation_is_listed_in_order(self):
+        first = self.start(message='第一個問題')
+        turns.finish(self.connection, first, turns.COMPLETED, 1.0, reply='答一')
+        second = self.start(message='第二個問題')
+        rows = turns.conversation(self.connection, self.conversation)
+        self.assertEqual([(r['id'], r['message'], r['reply']) for r in rows],
+                         [(first, '第一個問題', '答一'), (second, '第二個問題', None)])
+        self.assertEqual(turns.conversation(self.connection, str(uuid.uuid4())), [])
+
+    def test_delete_conversation_removes_content_but_keeps_request_marker(self):
+        first = self.start(message='to delete')
+        turns.append_progress(self.connection, first, {'step': 1}, 1.0)
+        turns.finish(self.connection, first, turns.COMPLETED, 2.0, reply='reply')
+        other = self.start(conversation=str(uuid.uuid4()), message='keep me')
+        self.assertEqual(turns.delete_conversation(self.connection, self.conversation, 3.0), 1)
+        self.assertEqual(turns.conversation(self.connection, self.conversation), [])
+        self.assertEqual(turns.events_after(self.connection, first, 0), [])
+        marker = self.connection.execute('SELECT state, result FROM requests WHERE id = ?', (first,)).fetchone()
+        self.assertEqual((marker['state'], marker['result']), ('deleted', None))
+        self.assertEqual(turns.get(self.connection, other)['message'], 'keep me')
+        self.assertEqual(turns.delete_conversation(self.connection, self.conversation, 4.0), 0)
+
+    def test_conversation_with_running_turn_cannot_be_deleted(self):
+        finished = self.start()
+        turns.finish(self.connection, finished, turns.COMPLETED, 1.0, reply='ok')
+        running = self.start()
+        with self.assertRaises(turns.ConversationBusy):
+            turns.delete_conversation(self.connection, self.conversation, 2.0)
+        self.assertFalse(self.connection.in_transaction)
+        self.assertEqual(len(turns.conversation(self.connection, self.conversation)), 2)
+        self.assertEqual(turns.get(self.connection, running)['state'], 'running')
+
+    def test_deleted_content_is_not_left_in_database_files(self):
+        marker = 'ZZ-deleted-content-marker-' + uuid.uuid4().hex
+        turn_id = self.start(message=marker)
+        turns.append_progress(self.connection, turn_id, {'note': marker}, 1.0)
+        turns.finish(self.connection, turn_id, turns.COMPLETED, 2.0, reply=marker)
+        db.truncate_wal(self.connection)  # 先讓內容確實寫進主檔
+        self.assertIn(marker.encode(), self.path.read_bytes())
+        turns.delete_conversation(self.connection, self.conversation, 3.0)
+        self.assertTrue(db.truncate_wal(self.connection))
+        for file in self.path.parent.iterdir():
+            with self.subTest(file=file.name):
+                self.assertNotIn(marker.encode(), file.read_bytes())
 
     def test_restart_marks_running_turns_unknown(self):
         running, finished = self.start(), self.start(conversation=str(uuid.uuid4()))

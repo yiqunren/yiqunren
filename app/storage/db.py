@@ -48,6 +48,11 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         ' PRIMARY KEY (turn_id, seq)'
         ')',
     ),
+    (
+        # FR-2：擁有者送出的訊息全文存在本機（第 2 版之前的回合沒有存，值為 NULL）。
+        'ALTER TABLE turns ADD COLUMN message TEXT',
+        'CREATE INDEX turns_conversation ON turns(conversation_id, started)',
+    ),
 )
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -64,7 +69,15 @@ def connect(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(str(path), timeout=5, isolation_level=None)
     connection.row_factory = sqlite3.Row
     connection.execute('PRAGMA foreign_keys = ON')
+    # 刪除時用零覆寫舊內容，擁有者刪掉的對話不留在資料庫檔的空白頁裡（FR-2）。
+    connection.execute('PRAGMA secure_delete = ON')
     return connection
+
+
+def truncate_wal(connection: sqlite3.Connection) -> bool:
+    """把 WAL 寫回主檔並清空；有其他連線正在讀時可能做不完整，回傳是否完整完成。"""
+    busy, _, _ = connection.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
+    return busy == 0
 
 
 def schema_version(connection: sqlite3.Connection) -> int:

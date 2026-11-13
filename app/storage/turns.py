@@ -1,7 +1,8 @@
 """FR-2 私聊回合的狀態與事件。
 
 資料庫是唯一的狀態來源：網頁重新整理時由這裡重送完整事件，不依賴瀏覽器的 Last-Event-ID。
-不存使用者訊息全文（NFR-6）；錯誤只存固定分類，不存原始錯誤訊息。
+擁有者的訊息與回覆存在本機，保留到擁有者刪除整段對話（FR-2、NFR-4）；不寫進 log（NFR-6）。
+錯誤只存固定分類，不存原始錯誤訊息。
 """
 from __future__ import annotations
 
@@ -29,21 +30,51 @@ class ConversationBusy(RuntimeError):
 
 
 def insert_running(connection: sqlite3.Connection, turn_id: str, conversation_id: str, member: str,
-                   now: float) -> None:
+                   message: str, now: float) -> None:
     """必須在呼叫者的交易裡執行（requests.claim 的 on_claim）。"""
     busy = connection.execute('SELECT 1 FROM turns WHERE conversation_id = ? AND state = ?',
                               (conversation_id, RUNNING)).fetchone()
     if busy:
         raise ConversationBusy('這段對話還有進行中的回合')
     try:
-        connection.execute('INSERT INTO turns (id, conversation_id, member, state, started) VALUES (?, ?, ?, ?, ?)',
-                           (turn_id, conversation_id, member, RUNNING, now))
+        connection.execute('INSERT INTO turns (id, conversation_id, member, message, state, started)'
+                           ' VALUES (?, ?, ?, ?, ?, ?)', (turn_id, conversation_id, member, message, RUNNING, now))
     except sqlite3.IntegrityError as exc:
         raise ConversationBusy('這段對話還有進行中的回合') from exc
 
 
 def get(connection: sqlite3.Connection, turn_id: str) -> sqlite3.Row | None:
     return connection.execute('SELECT * FROM turns WHERE id = ?', (turn_id,)).fetchone()
+
+
+def conversation(connection: sqlite3.Connection, conversation_id: str) -> list[sqlite3.Row]:
+    return connection.execute('SELECT * FROM turns WHERE conversation_id = ? ORDER BY started, rowid',
+                              (conversation_id,)).fetchall()
+
+
+def delete_conversation(connection: sqlite3.Connection, conversation_id: str, now: float) -> int:
+    """刪除一整段對話的訊息、回覆與事件，回傳刪掉的回合數；還有進行中的回合時丟 ConversationBusy。
+
+    請求登記（只有內容雜湊，沒有內容）保留並標為 deleted，讓刪除後用同一個請求 ID 重送時
+    明確告知已刪除，而不是重新執行一次（NFR-1）。
+    """
+    connection.execute('BEGIN IMMEDIATE')
+    try:
+        states = [row['state'] for row in
+                  connection.execute('SELECT state FROM turns WHERE conversation_id = ?', (conversation_id,))]
+        if RUNNING in states:
+            raise ConversationBusy('這段對話還有進行中的回合')
+        if states:
+            in_conversation = '(SELECT id FROM turns WHERE conversation_id = ?)'
+            connection.execute('UPDATE requests SET state = ?, result = NULL, updated = ? WHERE id IN '
+                               + in_conversation, ('deleted', now, conversation_id))
+            connection.execute('DELETE FROM turn_events WHERE turn_id IN ' + in_conversation, (conversation_id,))
+            connection.execute('DELETE FROM turns WHERE conversation_id = ?', (conversation_id,))
+        connection.execute('COMMIT')
+    except BaseException:
+        connection.execute('ROLLBACK')
+        raise
+    return len(states)
 
 
 def events_after(connection: sqlite3.Connection, turn_id: str, after: int) -> list[tuple[int, str, dict]]:

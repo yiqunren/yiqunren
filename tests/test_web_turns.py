@@ -138,6 +138,46 @@ class TurnApiTest(unittest.TestCase):
         events = read_events(client, body['request_id'])
         self.assertEqual(events[-1]['data']['state'], 'unknown')
 
+    def test_conversation_shows_messages_and_replies_after_restart(self):
+        body = self.body(text='第一個問題')
+        with TestClient(create_app(self.settings, runner=FakeRunner(steps=1, tick=0.01))) as first:
+            first.post('/api/turns', json=body)
+            read_events(first, body['request_id'])
+            second = self.body(conversation_id=body['conversation_id'], text='第二個問題')
+            first.post('/api/turns', json=second)
+            read_events(first, second['request_id'])
+        client = self.client()  # 伺服器重啟後
+        response = client.get('/api/conversations/' + body['conversation_id'])
+        self.assertEqual(response.status_code, 200)
+        listed = response.json()['turns']
+        self.assertEqual([t['message'] for t in listed], ['第一個問題', '第二個問題'])
+        self.assertTrue(all(t['state'] == 'completed' and t['reply'] for t in listed))
+        self.assertEqual(client.get('/api/turns/' + body['request_id']).json()['turn']['message'], '第一個問題')
+
+    def test_delete_conversation(self):
+        client = self.client(runner=FakeRunner(steps=2, tick=0.2))
+        body = self.body()
+        client.post('/api/turns', json=body)
+        # 進行中不能刪
+        self.assertEqual(client.delete('/api/conversations/' + body['conversation_id']).status_code, 409)
+        read_events(client, body['request_id'])
+        other = self.body()
+        client.post('/api/turns', json=other)
+        read_events(client, other['request_id'])
+        self.assertEqual(client.delete('/api/conversations/' + body['conversation_id']).status_code, 204)
+        self.assertEqual(client.get('/api/conversations/' + body['conversation_id']).status_code, 404)
+        self.assertEqual(client.get('/api/turns/' + body['request_id']).status_code, 404)
+        self.assertEqual(client.get('/api/turns/%s/events' % body['request_id']).status_code, 404)
+        self.assertEqual(client.get('/api/conversations/' + other['conversation_id']).status_code, 200)
+        # 刪除後用同一個請求重送：明確告知已刪除，不重新執行
+        self.assertEqual(client.post('/api/turns', json=body).status_code, 410)
+        self.assertEqual(client.get('/api/conversations/' + body['conversation_id']).status_code, 404)
+        # 同一段對話之後可以用新的請求重新開始
+        self.assertEqual(client.post('/api/turns', json={**body, 'request_id': str(uuid.uuid4())}).status_code, 202)
+        self.assertEqual(client.delete('/api/conversations/' + str(uuid.uuid4())).status_code, 404)
+        self.assertEqual(client.delete('/api/conversations/not-a-uuid').status_code, 422)
+        self.assertEqual(client.get('/api/conversations/not-a-uuid').status_code, 422)
+
     def test_without_runner_turns_are_refused_and_nothing_is_stored(self):
         client = TestClient(create_app(self.settings))
         with client:

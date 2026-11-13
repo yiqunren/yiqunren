@@ -45,6 +45,7 @@ def snapshot(row) -> dict:
         'id': row['id'],
         'conversation_id': row['conversation_id'],
         'member': row['member'],
+        'message': row['message'],
         'state': row['state'],
         'error_kind': row['error_kind'],
         'reply': row['reply'],
@@ -107,20 +108,42 @@ class TurnService:
             claim = requests.claim(
                 connection, body.request_id, KIND, payload, clock=self.clock,
                 on_claim=lambda c, now: turns.insert_running(c, body.request_id, body.conversation_id,
-                                                             body.member, now))
+                                                             body.member, body.text, now))
             row = turns.get(connection, body.request_id)
         except turns.ConversationBusy:
             return 409, {'detail': '這段對話還有進行中的回合'}
         finally:
             connection.close()
-        if claim.outcome == requests.REJECTED or row is None:
+        if claim.outcome == requests.REJECTED:
             return 409, {'detail': '這個請求 ID 已用於不同內容'}
+        if row is None:
+            if claim.state == 'deleted':
+                return 410, {'detail': '這個請求所屬的對話已被刪除'}
+            return 409, {'detail': '這個請求 ID 已用於其他用途'}
         if claim.outcome == requests.CLAIMED:
             task = asyncio.create_task(self._run(body.request_id, body.member, body.text))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
             return 202, {'turn': snapshot(row)}
         return 200, {'turn': snapshot(row)}
+
+    def conversation(self, conversation_id: str) -> list:
+        connection = self._connect()
+        try:
+            return turns.conversation(connection, conversation_id)
+        finally:
+            connection.close()
+
+    def delete_conversation(self, conversation_id: str) -> int:
+        connection = self._connect()
+        try:
+            deleted = turns.delete_conversation(connection, conversation_id, self.clock())
+            if deleted and not db.truncate_wal(connection):
+                # 有其他連線正在讀；WAL 裡的舊內容會在之後的檢查點清掉。
+                logger.warning('刪除對話後 WAL 未能立即清空')
+            return deleted
+        finally:
+            connection.close()
 
     async def _run(self, turn_id: str, member: str, text: str) -> None:
         async def emit(data: dict) -> None:
@@ -165,6 +188,33 @@ def _existing_turn(turn_id: str, service: Annotated[TurnService, Depends(_servic
     if row is None:
         raise HTTPException(status_code=404, detail='找不到這個回合')
     return row
+
+
+def _conversation_id(conversation_id: str) -> str:
+    try:
+        return checked_uuid(conversation_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail='對話識別無效') from None
+
+
+@router.get('/api/conversations/{conversation_id}')
+def get_conversation(conversation_id: Annotated[str, Depends(_conversation_id)],
+                     service: Annotated[TurnService, Depends(_service)]):
+    rows = service.conversation(conversation_id)
+    if not rows:
+        raise HTTPException(status_code=404, detail='找不到這段對話')
+    return {'conversation_id': conversation_id, 'turns': [snapshot(row) for row in rows]}
+
+
+@router.delete('/api/conversations/{conversation_id}', status_code=204)
+def delete_conversation(conversation_id: Annotated[str, Depends(_conversation_id)],
+                        service: Annotated[TurnService, Depends(_service)]):
+    try:
+        deleted = service.delete_conversation(conversation_id)
+    except turns.ConversationBusy:
+        raise HTTPException(status_code=409, detail='這段對話還有進行中的回合，不能刪除') from None
+    if not deleted:
+        raise HTTPException(status_code=404, detail='找不到這段對話')
 
 
 @router.post('/api/turns')

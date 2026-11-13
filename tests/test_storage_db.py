@@ -53,6 +53,14 @@ class DatabaseTest(unittest.TestCase):
         self.assertEqual(connection.execute('SELECT COUNT(*) FROM requests').fetchone()[0], 1)
         tables = {row['name'] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({'requests', 'turns', 'turn_events'} <= tables)
+        columns = {row['name'] for row in connection.execute('PRAGMA table_info(turns)')}
+        self.assertIn('message', columns)
+
+    def test_connections_overwrite_deleted_content(self):
+        connection = db.connect(db.prepare(self.state))
+        self.addCleanup(connection.close)
+        self.assertEqual(connection.execute('PRAGMA secure_delete').fetchone()[0], 1)
+        self.assertEqual(connection.execute('PRAGMA foreign_keys').fetchone()[0], 1)
 
     def test_newer_database_is_refused(self):
         path = db.prepare(self.state)
