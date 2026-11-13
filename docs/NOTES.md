@@ -23,9 +23,9 @@
     - 伺服器關閉（asyncio 取消）時不停止遠端的回合。重啟後 `TurnService.recover()` 對有 `bridge_record` 的進行中回合呼叫 `resume` 接回；沒有身分、身分讀不出來、轉接器不支援接回（`NotImplementedError`）或沒有轉接器的，標為「未知」。
   - 真轉接器 `app/web/worker_runner.py`（`WorkerTurnRunner(provider, auth_mode=, fields=)`）：包住 `app/services/worker_turn.py`，沒有改 `worker_turn.py`、`turn_contract.py`、`turn_host.py`。`tests/test_worker_runner.py` 用同程序裡的真 `TurnHost`（經 Unix socket、testbot 轉接器）驗證完成後 ack、存失敗不 ack、中斷（確認與未確認）、中斷比 `turn_begin` 先到、橋接重啟後接回得到「未知」，以及 HTTP 到橋接的接回與中斷。它還沒接進設定，目前只能在建立 app 時用 `create_app(runner=…)` 注入。
   - `YIQUNREN_FAKE_TURNS=1` 啟用假轉接器（`app/web/fake_runner.py`，不呼叫任何 AI，不支援接回）；沒有轉接器時送出回合回 503。
-- 截至 2026-11-13：`d0a6ee8` 是最新的功能 commit；`pytest` 結果 328 passed（`-W error`）。`origin/main` 已推到 `ecc0a8b`（含 `d0a6ee8`）；之後的筆記更新不一定已推送，現況以 `git status` 為準。還沒有網頁介面、成員設定、橋接程式（見下方建議第 2 項）。
+- 截至 2026-11-13：`d34468c` 是最新的功能 commit；`pytest` 結果 330 passed（`-W error`）。`origin/main` 已推到 `8d3cb33`；之後的筆記更新不一定已推送，現況以 `git status` 為準。還沒有網頁介面、成員設定、橋接程式（見下方建議第 2 項）。
 - 建議的下一步（建議，不是決定）：
-  1. FR-2 回覆長度上限（預設 100 KB，超過明確告知、不默默截斷）。
+  1. （已完成，`95e69a8` SPEC、`d34468c` 實作）FR-2 回覆長度上限：UTF-8 超過 100,000 位元組時回合失敗，分類 `reply_too_long`，回覆不存、不截斷；檢查在服務層 `save`。限制：橋接每次回覆是一行，單行上限 120,000 位元組（`cli_socket.MAX_RESPONSE`），橋接若回傳更大的一行，`worker_turn` 會當成連線失敗，回合變成「未知」而不是「回覆過長」；要明確告知得由橋接端自己先檢查 100,000 位元組並回報，做橋接與協定第 3 版時一起處理。
   2. 接 Codex 的真實轉接器。包住 `worker_turn` 的 `WorkerTurnRunner` 已經有了，剩下的是：
      - 橋接程式從哪來（決定 3，還沒定）：repo 裡目前只有 `scripts/turn_host.py`（橋接共用的回合管理）與 `scripts/private_cli.py`，沒有可以啟動、監聽 socket 的橋接程式。
      - 把它接進設定與 `create_app`（成員、認證模式、`fields` 怎麼組：Codex 的欄位是 message、thread_id、workspace、model、effort）。
