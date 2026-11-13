@@ -1,0 +1,105 @@
+"""本機狀態資料庫：SQLite（標準庫 sqlite3）、WAL 模式，資料表版本用 PRAGMA user_version 管理。
+
+不存提示詞全文或憑證（NFR-4、NFR-6）。資料庫目錄只給擁有者存取（0700），檔案 0600。
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import sqlite3
+import stat
+
+
+DB_NAME = 'state.sqlite3'
+
+# 第 n 個元素把資料庫從版本 n 升到 n+1；已發布的元素不再修改，只往後加。
+MIGRATIONS: tuple[tuple[str, ...], ...] = (
+    (
+        'CREATE TABLE requests ('
+        ' id TEXT PRIMARY KEY,'
+        ' kind TEXT NOT NULL,'
+        ' payload_hash TEXT NOT NULL,'
+        ' state TEXT NOT NULL,'
+        ' created REAL NOT NULL,'
+        ' updated REAL NOT NULL,'
+        ' result TEXT'
+        ')',
+    ),
+)
+SCHEMA_VERSION = len(MIGRATIONS)
+
+
+class StorageError(RuntimeError):
+    pass
+
+
+def database_path(state_dir: Path) -> Path:
+    return Path(state_dir) / DB_NAME
+
+
+def connect(path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(str(path), timeout=5, isolation_level=None)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def schema_version(connection: sqlite3.Connection) -> int:
+    return connection.execute('PRAGMA user_version').fetchone()[0]
+
+
+def migrate(connection: sqlite3.Connection) -> int:
+    connection.execute('BEGIN IMMEDIATE')
+    try:
+        current = schema_version(connection)
+        if current > SCHEMA_VERSION:
+            raise StorageError('資料庫版本比程式新，請改用較新版本的程式')
+        for version in range(current, SCHEMA_VERSION):
+            for statement in MIGRATIONS[version]:
+                connection.execute(statement)
+            connection.execute('PRAGMA user_version = %d' % (version + 1))
+        connection.execute('COMMIT')
+    except BaseException:
+        connection.execute('ROLLBACK')
+        raise
+    return SCHEMA_VERSION
+
+
+def _check_private_dir(path: Path) -> None:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = os.lstat(path)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise StorageError('狀態目錄必須是擁有者自己的目錄，權限 0700')
+
+
+def _check_private_file(path: Path) -> None:
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
+            raise StorageError('資料庫檔必須是擁有者自己的一般檔案，權限 0600')
+    finally:
+        os.close(fd)
+
+
+def prepare(state_dir: Path) -> Path:
+    """建立或升級資料庫，回傳資料庫路徑。失敗時丟 StorageError，不默默改用其他位置。"""
+    state_dir = Path(state_dir)
+    if not state_dir.is_absolute():
+        raise StorageError('狀態目錄必須是絕對路徑')
+    path = database_path(state_dir)
+    try:
+        _check_private_dir(state_dir)
+        _check_private_file(path)
+        connection = connect(path)
+        try:
+            mode = connection.execute('PRAGMA journal_mode=WAL').fetchone()[0]
+            if mode != 'wal':
+                raise StorageError('無法啟用 WAL 模式')
+            migrate(connection)
+        finally:
+            connection.close()
+    except StorageError:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise StorageError('狀態資料庫無法開啟') from exc
+    return path

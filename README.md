@@ -38,31 +38,34 @@ MVP 先接 Codex 與 Grok；Claude Code 是第三家，先做 API key 模式。�
 - **失敗診斷檔**：只存在本機，寫入前先遮罩可能的機密。
 - **調度依據**：調度用的現況快照與各家能力描述。
 
-## 開發者：跑測試
+## 開發者：跑測試與啟動後端
 
-需要 Python 3.12 以上。目前只在 Linux（WSL）上測試過。
+需要 Python 3.12 以上與 [uv](https://docs.astral.sh/uv/)。目前只在 Linux（WSL）上測試過。
 
-Ubuntu 24.04 內建 Python 3.12，可直接用這組指令：
-
-```bash
-git clone https://github.com/yiqunren/yiqunren.git
-cd yiqunren
-python3 -m venv .venv
-.venv/bin/pip install pytest
-.venv/bin/pytest
-```
-
-Ubuntu 22.04 內建的是 Python 3.10，請改用 [uv](https://docs.astral.sh/uv/) 下載 3.12 並建立虛擬環境，其餘步驟相同：
+依賴寫在 `pyproject.toml`，版本鎖在 `uv.lock`。`uv sync` 會照鎖檔建立 `.venv`；系統沒有 Python 3.12 時（例如 Ubuntu 22.04 內建的是 3.10），uv 會自動下載。
 
 ```bash
 git clone https://github.com/yiqunren/yiqunren.git
 cd yiqunren
-uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python pytest
+uv sync
 .venv/bin/pytest
 ```
 
-除了 pytest，目前沒有其他第三方依賴。
+啟動後端（目前只有健康檢查 `GET /api/health`，還沒有網頁介面）：
+
+```bash
+.venv/bin/python -m app.web
+```
+
+預設只聽 `127.0.0.1:8420`，狀態資料庫放在 `~/.local/state/yiqunren/`（有設 `XDG_STATE_HOME` 時改放在它底下）。可用環境變數覆寫：
+
+| 環境變數 | 用途 | 預設 |
+|---|---|---|
+| `YIQUNREN_HOST` | 監聽的 IP 位址；改成其他位址就會開放給其他網路 | `127.0.0.1` |
+| `YIQUNREN_PORT` | 監聽的埠 | `8420` |
+| `YIQUNREN_STATE_DIR` | 狀態資料庫目錄（絕對路徑，權限必須是 0700） | `~/.local/state/yiqunren` |
+
+資料庫建議放在 Linux 檔案系統上；放在 WSL 的 `/mnt/*` 底下會變慢，也不要讓 Windows 端的程式同時開這個檔。
 
 ## 憑證與費用
 
