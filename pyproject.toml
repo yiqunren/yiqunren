@@ -1,0 +1,23 @@
+[project]
+name = "yiqunren"
+version = "0.0.0"
+description = "Yiqunren（議群人）：本機執行的多 AI 辦公室"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+# 只裝 fastapi，不裝 fastapi[standard]；內建遙測在程式裡明確關閉（SPEC 第 7 節第 5 項、NFR-4）。
+dependencies = [
+    "fastapi>=0.162.5,<0.163",
+    "uvicorn>=0.54.0",
+]
+
+[dependency-groups]
+# httpx2 是 FastAPI 測試客戶端（fastapi.testclient，即 starlette.testclient）的依賴；
+# Starlette 1.10 起改用 httpx2，搭配舊的 httpx 會出現棄用警告。
+dev = [
+    "pytest>=9.2.0",
+    "httpx2>=2.16.0",
+]
+
+[tool.uv]
+# 目前還不打包成可安裝的套件，只管理依賴與鎖檔。
+package = false
