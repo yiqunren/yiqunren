@@ -1,4 +1,4 @@
-# 交接筆記（2026-11-12 起草，2026-11-13 第二次更新）
+# 交接筆記（2026-11-12 起草，2026-11-13 第三次更新）
 
 這份筆記記的是還沒寫進其他文件的待辦，讓換 session 後可以接得上。正式的決策與需求以 `docs/SPEC.md` 為準，匯入紀錄在 `PROVENANCE.md`，隔離與 Git 規則在 `CLAUDE.md`。
 
@@ -12,15 +12,24 @@
   - `app/web/`：設定（預設只聽 `127.0.0.1:8420`，可用 `YIQUNREN_HOST`／`YIQUNREN_PORT`／`YIQUNREN_STATE_DIR` 覆寫）、FastAPI app（內建遙測明確關閉、API 文件頁關閉）、健康檢查 `GET /api/health`、`python -m app.web` 啟動。
   - `app/storage/`：狀態資料庫（WAL、`PRAGMA user_version` 版本管理、目錄 0700／檔案 0600）、NFR-1 請求登記（同 ID 同內容回傳原紀錄、不同內容拒絕、多程序只有一個取得執行權）。
 - FR-2 私聊的後端已用假轉接器做到可以完整跑通（2026-11-13）：
-  - 範圍 B（`5ae11fa`）：`POST /api/turns` 送出回合（帶 NFR-1 請求 ID；同 ID 同內容回傳原結果、不同內容 409；同一段對話同時只有一個進行中回合，否則 409）、`GET /api/turns/{id}`、SSE `GET /api/turns/{id}/events`（一律從資料庫讀事件：不帶 `Last-Event-ID` 從頭重送，帶了只補送之後的）、伺服器啟動時把殘留的「執行中」回合標為「未知」。
+  - 範圍 B（`5ae11fa`）：`POST /api/turns` 送出回合（帶 NFR-1 請求 ID；同 ID 同內容回傳原結果、不同內容 409；同一段對話同時只有一個進行中回合，否則 409）、`GET /api/turns/{id}`、SSE `GET /api/turns/{id}/events`（一律從資料庫讀事件：不帶 `Last-Event-ID` 從頭重送，帶了只補送之後的）。伺服器重啟時怎麼處理殘留的「執行中」回合，見下方「轉接器介面」那一條（原本是一律標為「未知」，`d0a6ee8` 起改為先接回）。
   - 保存與刪除（`483804c` SPEC、`19c3a6c` 實作）：訊息全文與回覆存在本機狀態資料庫，保留到擁有者刪除；`GET /api/conversations/{id}` 列整段對話，`DELETE /api/conversations/{id}` 刪除整段（進行中回合時 409）。每個連線都開 `secure_delete`，刪除後清空 WAL；請求登記只留雜湊並標為 `deleted`，刪除後用同一個請求 ID 重送回 410。
-  - 中斷與逾時（`ae3e16a`）：`POST /api/turns/{id}/interrupt`；單回合逾時目前固定 15 分鐘（`TIMEOUT_DEFAULT`）。
-  - 轉接器介面寫在 `app/web/runner.py`：轉接器是 `async (member, text, emit) -> 回覆文字`。系統要停止回合（中斷、逾時、伺服器關閉）時取消執行它的 asyncio 工作；轉接器確認程序已停止就讓 `CancelledError` 往外傳（回合標為已中斷；逾時則是「失敗（逾時）」），無法確認就丟 `StopUnconfirmed`（回合標為未知）。其他例外一律是失敗，只存固定分類 `internal_error`，不存原始錯誤訊息。
-  - `YIQUNREN_FAKE_TURNS=1` 啟用假轉接器（`app/web/fake_runner.py`，不呼叫任何 AI）；沒有轉接器時送出回合回 503。
-- 截至 2026-11-13：`main` 已推到 `origin/main`（含 `ae3e16a` 與這份筆記的更新）；`pytest` 結果 303 passed。還沒有網頁介面、成員設定與實際呼叫各家 CLI 的轉接器。
+  - 中斷與逾時（`ae3e16a` 第一版，`d0a6ee8` 改成對齊 `worker_turn`）：`POST /api/turns/{id}/interrupt`；單回合逾時目前固定 15 分鐘（`TIMEOUT_DEFAULT`）。
+  - 轉接器介面（`d0a6ee8`，寫在 `app/web/runner.py`）：轉接器繼承 `Runner`，實作 `run(turn, hooks)`、`resume(turn_id, record, hooks)`（可選）、`stop(turn_id)`。
+    - 三個回呼：`hooks.began(record)` 在橋接接受回合後把回合身分存進資料庫（`turns.bridge_record`，資料庫第 4 版，不含訊息或回覆）；`hooks.progress(item)` 記進度；`hooks.save(reply)` 存回覆並把回合標為完成。轉接器要在 `save` 成功之後才通知橋接丟掉回覆（`worker_turn` 的 ack）；`save` 在回合已不在進行中時丟例外，所以不會誤 ack。
+    - 結果用例外表示：`Interrupted`（已中斷，確認程序已停止）、`Unknown(reason)`（未知）、`Failed(kind)`（失敗；分類不在固定清單就記為 `internal_error`）。其他例外、或返回卻沒呼叫 `save`，也都是 `internal_error`，只存固定分類，不存原始錯誤訊息。
+    - 中斷：服務層呼叫 `runner.stop(turn_id)`（真轉接器送 `turn_stop`），不再取消 asyncio 工作。送達後 SSE 先送一個 `stopping`（中斷中）事件，之後才是結束事件；送不到轉接器時回 502，回合不變。
+    - 逾時：由轉接器或它的橋接執行，秒數放在 `TurnInput.timeout`；服務層不再自己計時。
+    - 伺服器關閉（asyncio 取消）時不停止遠端的回合。重啟後 `TurnService.recover()` 對有 `bridge_record` 的進行中回合呼叫 `resume` 接回；沒有身分、身分讀不出來、轉接器不支援接回（`NotImplementedError`）或沒有轉接器的，標為「未知」。
+  - 真轉接器 `app/web/worker_runner.py`（`WorkerTurnRunner(provider, auth_mode=, fields=)`）：包住 `app/services/worker_turn.py`，沒有改 `worker_turn.py`、`turn_contract.py`、`turn_host.py`。`tests/test_worker_runner.py` 用同程序裡的真 `TurnHost`（經 Unix socket、testbot 轉接器）驗證完成後 ack、存失敗不 ack、中斷（確認與未確認）、中斷比 `turn_begin` 先到、橋接重啟後接回得到「未知」，以及 HTTP 到橋接的接回與中斷。它還沒接進設定，目前只能在建立 app 時用 `create_app(runner=…)` 注入。
+  - `YIQUNREN_FAKE_TURNS=1` 啟用假轉接器（`app/web/fake_runner.py`，不呼叫任何 AI，不支援接回）；沒有轉接器時送出回合回 503。
+- 截至 2026-11-13：`d0a6ee8` 是最新的功能 commit；`pytest` 結果 328 passed（`-W error`）。寫這份筆記時，`origin/main` 只到 `641066a`，`d0a6ee8` 與這份筆記的更新還沒推送，現況以 `git status` 為準。還沒有網頁介面、成員設定、橋接程式（見下方建議第 2 項）。
 - 建議的下一步（建議，不是決定）：
   1. FR-2 回覆長度上限（預設 100 KB，超過明確告知、不默默截斷）。
-  2. 接 Codex 的真實轉接器：照 `app/web/runner.py` 的介面，經由現有的轉接器登記處與回合協定（`app/services/turn_contract.py`、`cli_socket.py`）；要先確認停止（`turn_stop`）能怎麼確認程序已結束。
+  2. 接 Codex 的真實轉接器。包住 `worker_turn` 的 `WorkerTurnRunner` 已經有了，剩下的是：
+     - 橋接程式從哪來（決定 3，還沒定）：repo 裡目前只有 `scripts/turn_host.py`（橋接共用的回合管理）與 `scripts/private_cli.py`，沒有可以啟動、監聽 socket 的橋接程式。
+     - 把它接進設定與 `create_app`（成員、認證模式、`fields` 怎麼組：Codex 的欄位是 message、thread_id、workspace、model、effort）。
+     - 橋接協定第 3 版加上結構化的錯誤分類（`error_kind`），才分得出 `timeout` 與 `internal_error`；目前橋接逾時回報為一般失敗，只能記成 `internal_error`。決定 1：等做橋接時一起加。
   3. FR-1 成員設定（讓逾時、模型、認證模式可以依成員設定）。
   4. 範圍 C（NFR-3）：配對、Cookie、CSRF、大小與頻率限制；目前所有改變狀態的請求（送出、中斷、刪除對話）都還沒有防護，所以後端只適合在本機單人環境用。
   5. 前端（React＋TypeScript＋Vite），再接 Grok，最後做 FR-3 群聊。
@@ -40,7 +49,11 @@
    - `CLAUDE.md` 隔離規則提到上游專案名稱 AgentsOffice、AgentFleet，已隨 repo 公開；要不要保留由擁有者決定。
 6. 狀態目錄的權限檢查要求 0700，所以 `YIQUNREN_STATE_DIR` 設在 WSL 的 `/mnt/*`（drvfs 預設權限通常是 0777）會被拒絕。這比技術選型報告第 7 節第 5 項「不必把 `/mnt/*` 擋掉」更嚴；要不要放寬尚未決定。
 7. `app/services/write_ownership.py:15` 的寫入權登記庫預設還在 repo 的 `data/` 底下，應改到狀態目錄（技術選型報告第 4 節）；尚未處理。
-8. 回合進行中，從按下「中斷」到轉接器確認停止之間，SSE 沒有「中斷中」的事件，介面要等結束事件才知道結果；假轉接器幾乎立即停止，真的轉接器可能要等幾秒，接上真轉接器時可能要補。
+8. `d0a6ee8` 之後轉接器介面的已知限制（沒有處理，也沒有 SPEC 要求）：
+   - 接回（`resume`）時進度從頭查回，重啟前已經記過的進度項可能再記一次（只影響進度顯示；要避免得改 `worker_turn`）。
+   - 中斷比 `turn_begin` 的回覆先到時，轉接器會在拿到橋接身分後補送 `turn_stop`；補送失敗只記一行警告，回合會照常跑完或逾時。
+   - 中斷在回合工作開始前就送到時，轉接器的 `run` 仍會被呼叫，但一開始就照辦、不做任何工作（假轉接器與 `WorkerTurnRunner` 都是）。
+   - `tests/test_worker_runner.py` 從 `tests/test_web_turns.py` 匯入讀 SSE 的小函式，兩個測試檔因此綁在一起。
 9. 刪除對話時若有其他連線正在讀（例如還開著的 SSE），WAL 可能無法立刻清空，舊內容要等之後的檢查點才會清掉（伺服器會記一行警告）；這個情況沒有寫測試。
 10. 開發環境：`uv sync` 建立 `.venv`（Python 3.12）。2026-11-13 為了驗證另外下載的 uv 管理 Python 在 `~/.local/share/uv/python/`，可用 `uv python uninstall` 移除。
 
@@ -56,6 +69,7 @@
 ## 仍待決定
 
 - 下一步的順序是否照「主線狀態」的建議。
+- 橋接程式從哪來（決定 3，擁有者 2026-11-13 說之後再說）：本 repo 自己寫，或經規格側 session 依 `CLAUDE.md` 的匯入規則帶進來。在這個決定之前，真轉接器只能用測試裡的假橋接驗證。
 - 狀態目錄 0700 檢查要不要對 `/mnt/*` 放寬（見上方待辦第 6 項）。
 - `docs/SPEC.md` 第 7 節第 6 項：美術素材來源（只有做 FR-11 才需要）。
 - 開始收費前要向原廠確認的事項：見 `docs/SPEC.md` 第 7 節第 4 項。
