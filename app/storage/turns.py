@@ -23,6 +23,7 @@ TIMEOUT = 'timeout'  # 超過單回合逾時，且已確認程序停止
 ERROR_KINDS = frozenset({INTERNAL_ERROR, TIMEOUT})
 
 PROGRESS = 'progress'
+STOPPING = 'stopping'  # 中斷要求已送達轉接器，等它確認程序停止
 DONE = 'done'
 
 
@@ -105,6 +106,36 @@ def append_progress(connection: sqlite3.Connection, turn_id: str, data: dict, no
     return seq
 
 
+def mark_stopping(connection: sqlite3.Connection, turn_id: str, now: float) -> int | None:
+    """寫入「中斷中」事件；回合已結束或已經寫過時不再寫入，回傳 None。"""
+    connection.execute('BEGIN IMMEDIATE')
+    try:
+        row = get(connection, turn_id)
+        seen = connection.execute('SELECT 1 FROM turn_events WHERE turn_id = ? AND kind = ?',
+                                  (turn_id, STOPPING)).fetchone()
+        seq = (_append(connection, turn_id, STOPPING, {}, now)
+               if row and row['state'] == RUNNING and not seen else None)
+        connection.execute('COMMIT')
+    except BaseException:
+        connection.execute('ROLLBACK')
+        raise
+    return seq
+
+
+def save_record(connection: sqlite3.Connection, turn_id: str, record: dict) -> bool:
+    """存下轉接器接受回合後的身分（重啟後接回用）；回合不是進行中時不存，回傳 False。"""
+    text = json.dumps(record, ensure_ascii=False, allow_nan=False, sort_keys=True)
+    return bool(connection.execute('UPDATE turns SET bridge_record = ? WHERE id = ? AND state = ?',
+                                   (text, turn_id, RUNNING)).rowcount)
+
+
+def recorded_running(connection: sqlite3.Connection) -> list[tuple[str, str]]:
+    """進行中、而且有轉接器身分的回合：(回合 ID, 身分 JSON)。"""
+    return [(row['id'], row['bridge_record']) for row in connection.execute(
+        'SELECT id, bridge_record FROM turns WHERE state = ? AND bridge_record IS NOT NULL ORDER BY started, rowid',
+        (RUNNING,))]
+
+
 def _finish_in_transaction(connection, turn_id, state, now, reply, error_kind) -> bool:
     updated = connection.execute('UPDATE turns SET state = ?, reply = ?, error_kind = ?, finished = ?'
                                  ' WHERE id = ? AND state = ?',
@@ -133,11 +164,15 @@ def finish(connection: sqlite3.Connection, turn_id: str, state: str, now: float,
     return done
 
 
-def mark_running_unknown(connection: sqlite3.Connection, now: float) -> list[str]:
-    """伺服器啟動時呼叫：上次執行留下、已經沒有程序在跑的回合，查不回結果，一律標為未知（FR-2）。"""
+def mark_running_unknown(connection: sqlite3.Connection, now: float, *, keep_recorded: bool = False) -> list[str]:
+    """伺服器啟動時呼叫：上次執行留下、查不回結果的進行中回合標為未知（FR-2）。
+
+    keep_recorded=True 時跳過有轉接器身分的回合，留給呼叫端接回。
+    """
+    query = 'SELECT id FROM turns WHERE state = ?' + (' AND bridge_record IS NULL' if keep_recorded else '')
     connection.execute('BEGIN IMMEDIATE')
     try:
-        ids = [row['id'] for row in connection.execute('SELECT id FROM turns WHERE state = ?', (RUNNING,))]
+        ids = [row['id'] for row in connection.execute(query, (RUNNING,))]
         for turn_id in ids:
             _finish_in_transaction(connection, turn_id, UNKNOWN, now, None, None)
         connection.execute('COMMIT')

@@ -8,8 +8,10 @@ import uuid
 
 from fastapi.testclient import TestClient
 
+from app.storage import db
 from app.web.config import Settings
 from app.web.fake_runner import FakeRunner
+from app.web.runner import Failed, Interrupted, Runner, Unknown
 from app.web.server import create_app
 from app.web.turns import MAX_MESSAGE_CHARS
 
@@ -34,17 +36,53 @@ def read_events(client, turn_id, last_event_id=None):
     return events
 
 
-class FailingRunner:
-    async def __call__(self, member, text, emit):
-        await emit({'step': 1})
+class FailingRunner(Runner):
+    async def run(self, turn, hooks):
+        hooks.progress({'step': 1})
         raise RuntimeError('raw provider error with sensitive detail')
 
 
-class BlockingRunner:
-    """一直不結束，直到伺服器關閉把它取消。"""
-    async def __call__(self, member, text, emit):
-        await emit({'step': 1})
+class BlockingRunner(Runner):
+    """一直不結束，直到伺服器關閉把它取消；沒有存轉接器身分，重啟後無法接回。"""
+    async def run(self, turn, hooks):
+        hooks.progress({'step': 1})
         await asyncio.sleep(3600)
+
+
+class RaisingRunner(Runner):
+    """一開始就以指定的例外結束，或沒交出回覆就返回（error=None）。"""
+    def __init__(self, error=None):
+        self.error = error
+
+    async def run(self, turn, hooks):
+        if self.error is not None:
+            raise self.error
+
+
+class UnreachableStopRunner(BlockingRunner):
+    async def stop(self, turn_id):
+        raise OSError('bridge socket gone')
+
+
+class RecordingRunner(Runner):
+    """存下轉接器身分後一直不結束，直到伺服器關閉；重啟後 resume 依 resume_with 決定結果：
+    文字就當回覆存下，例外就丟出，None 則不支援接回。"""
+    def __init__(self, resume_with=None):
+        self.resume_with, self.resumed = resume_with, []
+
+    async def run(self, turn, hooks):
+        hooks.began({'bridge_turn': 'b-' + turn.turn_id, 'epoch': 'e1'})
+        hooks.progress({'step': 1})
+        await asyncio.sleep(3600)
+
+    async def resume(self, turn_id, record, hooks):
+        self.resumed.append((turn_id, record))
+        if self.resume_with is None:
+            raise NotImplementedError
+        hooks.progress({'step': 2})
+        if isinstance(self.resume_with, Exception):
+            raise self.resume_with
+        hooks.save(self.resume_with)
 
 
 class TurnApiTest(unittest.TestCase):
@@ -139,6 +177,59 @@ class TurnApiTest(unittest.TestCase):
         events = read_events(client, body['request_id'])
         self.assertEqual(events[-1]['data']['state'], 'unknown')
 
+    def start_recorded_turn_and_shut_down(self):
+        """第一次啟動：回合存下轉接器身分後伺服器關閉，回合留在進行中。"""
+        body = self.body()
+        with TestClient(create_app(self.settings, runner=RecordingRunner())) as first:
+            self.assertEqual(first.post('/api/turns', json=body).status_code, 202)
+            self.assertEqual(read_events_until(first, body['request_id'], 1)[0]['event'], 'progress')
+        return body
+
+    def test_restart_reattaches_recorded_turn(self):
+        body = self.start_recorded_turn_and_shut_down()
+        runner = RecordingRunner(resume_with='接回後的回覆')
+        client = self.client(runner=runner)
+        events = read_events(client, body['request_id'])
+        self.assertEqual([e['event'] for e in events], ['progress', 'progress', 'done'])
+        self.assertEqual(events[-1]['data'], {'state': 'completed', 'error_kind': None, 'reply': '接回後的回覆'})
+        self.assertEqual(runner.resumed, [(body['request_id'], {'bridge_turn': 'b-' + body['request_id'],
+                                                                'epoch': 'e1'})])
+        turn = client.get('/api/turns/' + body['request_id']).json()['turn']
+        self.assertEqual(turn['state'], 'completed')
+        self.assertNotIn('bridge_record', turn)
+
+    def test_restart_reattach_outcomes(self):
+        cases = [(Interrupted(), 'interrupted'), (Unknown('bridge_restarted'), 'unknown'),
+                 (Failed('timeout'), 'failed'), (None, 'unknown')]
+        for resume_with, state in cases:
+            with self.subTest(resume_with=type(resume_with).__name__):
+                body = self.start_recorded_turn_and_shut_down()
+                runner = RecordingRunner(resume_with=resume_with)
+                with TestClient(create_app(self.settings, runner=runner)) as client:
+                    self.assertEqual(read_events(client, body['request_id'])[-1]['data']['state'], state)
+                self.assertEqual(len(runner.resumed), 1)
+
+    def test_restart_cannot_reattach_without_runner_or_with_fake_runner(self):
+        for runner in (None, FakeRunner(steps=1, tick=0.01)):
+            with self.subTest(runner=type(runner).__name__):
+                body = self.start_recorded_turn_and_shut_down()
+                with TestClient(create_app(self.settings, runner=runner)) as client:
+                    self.assertEqual(read_events(client, body['request_id'])[-1]['data']['state'], 'unknown')
+
+    def test_restart_with_unreadable_record_is_unknown(self):
+        for record in ('[1, 2', '[1, 2]'):  # 不是 JSON、不是物件
+            with self.subTest(record=record):
+                body = self.start_recorded_turn_and_shut_down()
+                connection = db.connect(db.database_path(self.settings.state_dir))
+                try:
+                    connection.execute('UPDATE turns SET bridge_record = ? WHERE id = ?', (record, body['request_id']))
+                finally:
+                    connection.close()
+                runner = RecordingRunner(resume_with='不該被呼叫')
+                with TestClient(create_app(self.settings, runner=runner)) as client:
+                    self.assertEqual(read_events(client, body['request_id'])[-1]['data']['state'], 'unknown')
+                self.assertEqual(runner.resumed, [])
+
     def test_conversation_shows_messages_and_replies_after_restart(self):
         body = self.body(text='第一個問題')
         with TestClient(create_app(self.settings, runner=FakeRunner(steps=1, tick=0.01))) as first:
@@ -187,6 +278,7 @@ class TurnApiTest(unittest.TestCase):
         response = client.post('/api/turns/%s/interrupt' % body['request_id'])
         self.assertEqual(response.status_code, 202)
         events = read_events(client, body['request_id'])
+        self.assertEqual([e['event'] for e in events][-2:], ['stopping', 'done'])  # 送達後先告知「中斷中」
         self.assertEqual(events[-1]['data'], {'state': 'interrupted', 'error_kind': None, 'reply': None})
         self.assertEqual(client.get('/api/turns/' + body['request_id']).json()['turn']['state'], 'interrupted')
         again = client.post('/api/turns/%s/interrupt' % body['request_id'])
@@ -228,13 +320,53 @@ class TurnApiTest(unittest.TestCase):
         self.assertEqual(read_events(client, body['request_id'])[-1]['data']['state'], 'unknown')
 
     def test_runner_own_timeout_error_is_not_reported_as_turn_timeout(self):
-        class OwnTimeout:
-            async def __call__(self, member, text, emit):
-                raise TimeoutError('provider socket timed out')
-        client = self.client(runner=OwnTimeout())
+        client = self.client(runner=RaisingRunner(TimeoutError('provider socket timed out')))
         body = self.body()
         client.post('/api/turns', json=body)
         self.assertEqual(read_events(client, body['request_id'])[-1]['data']['error_kind'], 'internal_error')
+
+    def test_runner_outcomes_map_to_fixed_states(self):
+        cases = [(None, ('failed', 'internal_error')),  # 沒交出回覆就返回
+                 (Failed('timeout'), ('failed', 'timeout')),
+                 (Failed('quota exceeded: raw text'), ('failed', 'internal_error')),  # 不在固定分類
+                 (Unknown('transport'), ('unknown', None)),
+                 (Interrupted(), ('interrupted', None))]
+        for error, expected in cases:
+            with self.subTest(error=repr(error)):
+                client = self.client(runner=RaisingRunner(error))
+                body = self.body()
+                client.post('/api/turns', json=body)
+                done = read_events(client, body['request_id'])[-1]['data']
+                self.assertEqual((done['state'], done['error_kind']), expected)
+
+    def test_save_raises_when_the_reply_was_not_stored(self):
+        class DoubleSaveRunner(Runner):
+            second = None
+
+            async def run(self, turn, hooks):
+                hooks.save('第一次')
+                try:
+                    hooks.save('第二次')  # 回合已完成，不會存下；轉接器不可以據此通知遠端丟掉回覆
+                except Exception as exc:
+                    DoubleSaveRunner.second = type(exc).__name__
+
+        client = self.client(runner=DoubleSaveRunner())
+        body = self.body()
+        client.post('/api/turns', json=body)
+        self.assertEqual(read_events(client, body['request_id'])[-1]['data']['reply'], '第一次')
+        self.assertEqual(DoubleSaveRunner.second, 'RuntimeError')
+        turn = client.get('/api/turns/' + body['request_id']).json()['turn']
+        self.assertEqual((turn['state'], turn['reply']), ('completed', '第一次'))
+
+    def test_interrupt_that_does_not_reach_runner_is_reported(self):
+        client = self.client(runner=UnreachableStopRunner())
+        body = self.body()
+        client.post('/api/turns', json=body)
+        read_events_until(client, body['request_id'], 1)
+        response = client.post('/api/turns/%s/interrupt' % body['request_id'])
+        self.assertEqual((response.status_code, response.json()['turn']['state']), (502, 'running'))
+        self.assertEqual([e['event'] for e in read_events_until(client, body['request_id'], 1)], ['progress'])
+        self.assertEqual(client.get('/api/turns/' + body['request_id']).json()['turn']['state'], 'running')
 
     def test_without_runner_turns_are_refused_and_nothing_is_stored(self):
         client = TestClient(create_app(self.settings))
@@ -259,33 +391,41 @@ class TurnApiTest(unittest.TestCase):
 
 
 class InterruptBeforeStartTest(unittest.TestCase):
-    """中斷在回合工作開始執行前就送到：執行者不會被呼叫，回合直接標為已中斷。"""
+    """中斷在回合工作開始執行前就送到：轉接器一開始就照辦，沒有做任何工作，回合標為已中斷。"""
 
     def test_interrupt_before_runner_starts(self):
-        from app.storage import db
         from app.web.turns import TurnRequest, TurnService
 
         with tempfile.TemporaryDirectory(prefix='yiqunren-interrupt-test-') as temporary:
             path = db.prepare(Path(temporary) / 'state')
-            called = []
 
-            async def runner(member, text, emit):
-                called.append(True)
-                return 'should not run'
+            class OrderRecordingRunner(FakeRunner):
+                calls = []
+
+                async def run(self, turn, hooks):
+                    self.calls.append('run')
+                    await super().run(turn, hooks)
+
+                async def stop(self, turn_id):
+                    self.calls.append('stop')
+                    await super().stop(turn_id)
+
+            # 沒被中斷的話，0.01 秒後就會有進度並完成。
+            runner = OrderRecordingRunner(steps=1, tick=0.01)
 
             async def scenario():
                 service = TurnService(path, runner)
                 body = TurnRequest(request_id=str(uuid.uuid4()), conversation_id=str(uuid.uuid4()),
                                    member='m1', text='hi')
                 self.assertEqual(service.start(body)[0], 202)
-                self.assertEqual(service.interrupt(body.request_id)[0], 202)  # 同步呼叫，中間沒有讓工作開始
+                self.assertEqual((await service.interrupt(body.request_id))[0], 202)
                 await asyncio.sleep(0.05)
                 return service.get(body.request_id)['state'], service.events_after(body.request_id, 0)
 
             state, events = asyncio.run(scenario())
-        self.assertEqual(called, [])
+        self.assertEqual(runner.calls, ['stop', 'run'])  # 中斷送到時，回合工作還沒開始執行
         self.assertEqual(state, 'interrupted')
-        self.assertEqual(events, [(1, 'done', {'state': 'interrupted', 'error_kind': None})])
+        self.assertEqual(events, [(1, 'stopping', {}), (2, 'done', {'state': 'interrupted', 'error_kind': None})])
 
 
 def read_events_until(client, turn_id, count):

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import Annotated
@@ -17,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.services.turn_contract import TIMEOUT_DEFAULT, request_id as checked_uuid
 from app.storage import db, requests, turns
-from app.web.runner import StopUnconfirmed
+from app.web.runner import Failed, Hooks, Interrupted, TurnInput, Unknown
 
 
 KIND = 'private_turn'
@@ -58,13 +59,13 @@ def snapshot(row) -> dict:
 class TurnService:
     """一個 app 一份。runner 照 app/web/runner.py 的介面；None 表示還沒接上轉接器。
 
-    timeout 是單回合逾時（秒）。成員設定（FR-1）做好之前，所有回合都用 TIMEOUT_DEFAULT（15 分鐘）。
+    timeout 是交給轉接器的單回合逾時（秒），由轉接器或它的橋接執行。成員設定（FR-1）做好之前，
+    所有回合都用 TIMEOUT_DEFAULT（15 分鐘）。
     """
 
     def __init__(self, db_path, runner, *, timeout: float = TIMEOUT_DEFAULT, clock=time.time):
         self.db_path, self.runner, self.timeout, self.clock = db_path, runner, timeout, clock
         self._running: dict[str, asyncio.Task] = {}
-        self._interrupts: set[str] = set()
         self._versions: dict[str, int] = {}
         self._waiters: dict[str, asyncio.Event] = {}
 
@@ -72,11 +73,33 @@ class TurnService:
         return db.connect(self.db_path)
 
     def recover(self) -> list[str]:
+        """伺服器啟動時呼叫（要在事件迴圈裡）：上次留下的進行中回合，有轉接器身分的交給 resume 接回，
+        其餘標為未知。回傳標為未知的回合 ID。"""
         connection = self._connect()
+        resumable = []
         try:
-            return turns.mark_running_unknown(connection, self.clock())
+            now = self.clock()
+            unknown = turns.mark_running_unknown(connection, now, keep_recorded=self.runner is not None)
+            for turn_id, text in turns.recorded_running(connection) if self.runner is not None else ():
+                try:
+                    record = json.loads(text)
+                except ValueError:
+                    record = None
+                if isinstance(record, dict):
+                    resumable.append((turn_id, record))
+                elif turns.finish(connection, turn_id, turns.UNKNOWN, now):
+                    unknown.append(turn_id)
         finally:
             connection.close()
+        for turn_id, record in resumable:
+            self._spawn(turn_id, lambda hooks, t=turn_id, r=record: self._resume(t, r, hooks))
+        return unknown
+
+    async def _resume(self, turn_id: str, record: dict, hooks: Hooks) -> None:
+        try:
+            await self.runner.resume(turn_id, record, hooks)
+        except NotImplementedError:
+            raise Unknown('resume_unsupported') from None
 
     def get(self, turn_id: str):
         connection = self._connect()
@@ -128,36 +151,38 @@ class TurnService:
                 return 410, {'detail': '這個請求所屬的對話已被刪除'}
             return 409, {'detail': '這個請求 ID 已用於其他用途'}
         if claim.outcome == requests.CLAIMED:
-            task = asyncio.create_task(self._run(body.request_id, body.member, body.text))
-            self._running[body.request_id] = task
-            task.add_done_callback(lambda done: self._on_done(body.request_id, done))
+            turn = TurnInput(body.request_id, body.conversation_id, body.member, body.text, self.timeout)
+            self._spawn(body.request_id, lambda hooks: self.runner.run(turn, hooks))
             return 202, {'turn': snapshot(row)}
         return 200, {'turn': snapshot(row)}
 
-    def _on_done(self, turn_id: str, task: asyncio.Task) -> None:
-        self._running.pop(turn_id, None)
-        if task.cancelled() and turn_id in self._interrupts:
-            # 中斷在工作開始執行前就送到：執行者沒有被呼叫、沒有程序被啟動，可以直接標為已中斷。
-            self._interrupts.discard(turn_id)
-            connection = self._connect()
-            try:
-                turns.finish(connection, turn_id, turns.INTERRUPTED, self.clock())
-            finally:
-                connection.close()
-            self._bump(turn_id)
+    def _spawn(self, turn_id: str, call) -> None:
+        task = asyncio.create_task(self._drive(turn_id, call))
+        self._running[turn_id] = task
+        task.add_done_callback(lambda _: self._running.pop(turn_id, None))
 
-    def interrupt(self, turn_id: str) -> tuple[int, dict]:
-        """擁有者按「中斷」：要求執行者停止。結果（已中斷或未知）由 SSE 的 done 事件告知。"""
+    async def interrupt(self, turn_id: str) -> tuple[int, dict]:
+        """擁有者按「中斷」：把要求交給轉接器，送達後寫「中斷中」事件。
+        結果（已中斷或未知）由 SSE 的 done 事件告知。"""
         row = self.get(turn_id)
         if row is None:
             return 404, {'detail': '找不到這個回合'}
         task = self._running.get(turn_id)
         if row['state'] != turns.RUNNING or task is None or task.done():
             return 409, {'detail': '回合已經結束', 'turn': snapshot(row)}
-        if turn_id not in self._interrupts:
-            self._interrupts.add(turn_id)
-            task.cancel()
-        return 202, {'turn': snapshot(row)}
+        try:
+            await self.runner.stop(turn_id)
+        except Exception as exc:
+            logger.warning('回合 %s 的中斷要求沒有送達：%s', turn_id, type(exc).__name__)
+            return 502, {'detail': '中斷要求沒有送達轉接器，回合可能仍在執行', 'turn': snapshot(self.get(turn_id) or row)}
+        connection = self._connect()
+        try:
+            stopping = turns.mark_stopping(connection, turn_id, self.clock())
+        finally:
+            connection.close()
+        if stopping is not None:
+            self._bump(turn_id)
+        return 202, {'turn': snapshot(self.get(turn_id) or row)}
 
     def conversation(self, conversation_id: str) -> list:
         connection = self._connect()
@@ -177,51 +202,66 @@ class TurnService:
         finally:
             connection.close()
 
-    async def _run(self, turn_id: str, member: str, text: str) -> None:
-        async def emit(data: dict) -> None:
+    def _finish(self, turn_id: str, state: str, **outcome) -> bool:
+        # 沒有 await：寫入結束狀態與通知 SSE 不會被取消打斷。
+        connection = self._connect()
+        try:
+            done = turns.finish(connection, turn_id, state, self.clock(), **outcome)
+        finally:
+            connection.close()
+        self._bump(turn_id)
+        return done
+
+    async def _drive(self, turn_id: str, call) -> None:
+        """執行 call(hooks)（runner.run 或 resume），把結果對應到回合狀態（見 app/web/runner.py）。"""
+        saved = False
+
+        def began(record: dict) -> None:  # 可能在其他執行緒
             connection = self._connect()
             try:
-                turns.append_progress(connection, turn_id, data, self.clock())
+                if not turns.save_record(connection, turn_id, record):
+                    raise RuntimeError('回合已不在進行中')
+            finally:
+                connection.close()
+
+        def progress(item: dict) -> None:
+            connection = self._connect()
+            try:
+                turns.append_progress(connection, turn_id, item, self.clock())
             finally:
                 connection.close()
             self._bump(turn_id)
 
-        deadline = asyncio.timeout(self.timeout)
-        try:
-            async with deadline:
-                reply = await self.runner(member, text, emit)
+        def save(reply: str) -> None:
+            nonlocal saved
             if not isinstance(reply, str):
                 raise TypeError('回覆必須是文字')
-            outcome = {'state': turns.COMPLETED, 'reply': reply}
-        except StopUnconfirmed:
-            # 中斷、逾時或關閉時，執行者無法確認程序已停止（FR-2：未知）。
-            outcome = {'state': turns.UNKNOWN}
-        except asyncio.CancelledError:
-            if turn_id not in self._interrupts:
-                raise  # 伺服器關閉：回合留在進行中，下次啟動時標為未知
-            outcome = {'state': turns.INTERRUPTED}  # 執行者已確認程序停止
-        except TimeoutError:
-            if deadline.expired():
-                outcome = {'state': turns.FAILED, 'error_kind': turns.TIMEOUT}
-            else:  # 執行者自己丟出的 TimeoutError，不是單回合逾時
-                logger.warning('回合 %s 失敗：TimeoutError', turn_id)
+            if not self._finish(turn_id, turns.COMPLETED, reply=reply):
+                # 沒存下就不能讓轉接器通知遠端丟掉回覆。
+                raise RuntimeError('回合已不在進行中，回覆沒有存下')
+            saved = True
+
+        outcome = None
+        try:
+            await call(Hooks(began, progress, save))
+            if not saved:
+                logger.warning('回合 %s 失敗：轉接器沒有交出回覆', turn_id)
                 outcome = {'state': turns.FAILED, 'error_kind': turns.INTERNAL_ERROR}
+        except Interrupted:
+            outcome = {'state': turns.INTERRUPTED}  # 轉接器已確認程序停止
+        except Unknown:
+            outcome = {'state': turns.UNKNOWN}  # FR-2：無法確認時標為未知
+        except Failed as exc:
+            kind = exc.kind if exc.kind in turns.ERROR_KINDS else turns.INTERNAL_ERROR
+            outcome = {'state': turns.FAILED, 'error_kind': kind}
+        except asyncio.CancelledError:
+            raise  # 伺服器關閉：回合留在進行中，下次啟動時接回或標為未知
         except Exception as exc:
             # 只記錄分類與例外類型，不記錄訊息內容（NFR-6）。
             logger.warning('回合 %s 失敗：%s', turn_id, type(exc).__name__)
             outcome = {'state': turns.FAILED, 'error_kind': turns.INTERNAL_ERROR}
-        if turn_id in self._interrupts:
-            self._interrupts.discard(turn_id)
-            task = asyncio.current_task()
-            if task is not None and task.cancelling():
-                task.uncancel()  # 中斷要求已處理完，不再往外傳取消
-        # 以下沒有 await：寫入結束狀態與通知 SSE 不會被取消打斷。
-        connection = self._connect()
-        try:
-            turns.finish(connection, turn_id, now=self.clock(), **outcome)
-        finally:
-            connection.close()
-        self._bump(turn_id)
+        if outcome is not None and not saved:
+            self._finish(turn_id, **outcome)
 
     async def close(self) -> None:
         tasks = list(self._running.values())
@@ -275,9 +315,8 @@ async def start_turn(body: TurnRequest, service: Annotated[TurnService, Depends(
 
 
 @router.post('/api/turns/{turn_id}/interrupt')
-# async：要在事件迴圈裡取消工作，不能丟到執行緒池。
 async def interrupt_turn(turn_id: str, service: Annotated[TurnService, Depends(_service)]):
-    status, content = service.interrupt(turn_id)
+    status, content = await service.interrupt(turn_id)
     return JSONResponse(content, status_code=status)
 
 

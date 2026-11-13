@@ -129,6 +129,33 @@ class TurnStoreTest(unittest.TestCase):
                          (1, 'done', {'state': 'unknown', 'error_kind': None}))
         self.assertEqual(turns.get(self.connection, finished)['state'], 'completed')
 
+    def test_bridge_record_is_saved_only_while_running_and_kept_for_reattach(self):
+        recorded, plain = self.start(), self.start(conversation=str(uuid.uuid4()))
+        self.assertTrue(turns.save_record(self.connection, recorded, {'epoch': 'e1', 'request_id': 'r1'}))
+        self.assertEqual(turns.recorded_running(self.connection), [(recorded, '{"epoch": "e1", "request_id": "r1"}')])
+        # 重啟時只把沒有身分的回合標為未知，有身分的留給接回。
+        self.assertEqual(turns.mark_running_unknown(self.connection, 5.0, keep_recorded=True), [plain])
+        self.assertEqual(turns.get(self.connection, recorded)['state'], 'running')
+        turns.finish(self.connection, recorded, turns.COMPLETED, 6.0, reply='ok')
+        self.assertEqual(turns.recorded_running(self.connection), [])
+        self.assertFalse(turns.save_record(self.connection, recorded, {'epoch': 'e2'}))
+        self.assertEqual(turns.get(self.connection, recorded)['bridge_record'], '{"epoch": "e1", "request_id": "r1"}')
+        with self.assertRaises(ValueError):
+            turns.save_record(self.connection, self.start(conversation=str(uuid.uuid4())), {'x': float('nan')})
+
+    def test_stopping_event_is_written_once_and_only_while_running(self):
+        turn_id = self.start()
+        turns.append_progress(self.connection, turn_id, {'step': 1}, 1.0)
+        self.assertEqual(turns.mark_stopping(self.connection, turn_id, 2.0), 2)
+        self.assertIsNone(turns.mark_stopping(self.connection, turn_id, 3.0))
+        turns.finish(self.connection, turn_id, turns.INTERRUPTED, 4.0)
+        self.assertEqual([kind for _, kind, _ in turns.events_after(self.connection, turn_id, 0)],
+                         ['progress', 'stopping', 'done'])
+        finished = self.start()
+        turns.finish(self.connection, finished, turns.UNKNOWN, 5.0)
+        self.assertIsNone(turns.mark_stopping(self.connection, finished, 6.0))
+        self.assertIsNone(turns.mark_stopping(self.connection, str(uuid.uuid4()), 6.0))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -53,6 +53,10 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         'ALTER TABLE turns ADD COLUMN message TEXT',
         'CREATE INDEX turns_conversation ON turns(conversation_id, started)',
     ),
+    (
+        # 轉接器接受回合後存下的身分（JSON），伺服器重啟後用來接回；不含訊息、回覆或憑證。
+        'ALTER TABLE turns ADD COLUMN bridge_record TEXT',
+    ),
 )
 SCHEMA_VERSION = len(MIGRATIONS)
 
