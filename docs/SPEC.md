@@ -242,7 +242,11 @@ MVP 先接通 Codex 與 Grok 兩家轉接器，用來驗證「多家並列」。
      - 向 OpenAI 提出 Sign in with ChatGPT 的付費 App 申請。
      - 補查 OpenAI 與 xAI 的使用條款原文。這次兩頁都無法讀取。
      - 確認 Grok CLI 支援哪些訂閱方案。
-5. 技術選型：後端語言、資料庫、前端框架。
+5. （已決定，2026-11-13）技術選型（比較與原型驗證見 `docs/research/2026-11-13-tech-stack-options.md`）：
+   - 後端：Python 3.12 以上；Web 框架用 FastAPI，跑在 Uvicorn 上。只安裝 `fastapi` 與 `uvicorn`，不安裝 `fastapi[standard]`；建立 app 時明確關閉 FastAPI 內建的 OpenTelemetry，並用測試確認：即使使用者設了遙測外送的環境變數，也不會外送（NFR-4）。
+   - 資料庫：SQLite，用標準庫 `sqlite3`，WAL 模式；冪等與唯一執行權用 `BEGIN IMMEDIATE` 交易加唯一索引實作（NFR-1）。資料庫檔放在 Linux 檔案系統上的狀態目錄，可用 `YIQUNREN_` 開頭的環境變數覆寫；資料表版本用 `PRAGMA user_version` 管理。
+   - 前端：React＋TypeScript＋Vite，打包成單頁應用的靜態檔，放進 Python 套件由後端提供；一般使用者不需要安裝 Node。
+   - 即時更新：瀏覽器用 SSE 接收狀態與進度；改變狀態的動作（送出、中斷、確認）用一般 HTTP 請求，套用 NFR-1 與 NFR-3。重新整理頁面後的接回，由伺服器從資料庫重送完整狀態，不依賴 `Last-Event-ID`。
 6. 美術素材來源（只有做 FR-11 時才需要）。
 
 ## 8. 變更紀錄
@@ -253,3 +257,4 @@ MVP 先接通 Codex 與 Grok 兩家轉接器，用來驗證「多家並列」。
 - 2026-11-12：NFR-7 補上 MVP 的轉接器登記處需求與驗收條件。
 - 2026-11-12：FR-3 發言上限改為依參與人數計算（預設 2N+3）。
 - 2026-11-12：產品名稱由 Panelroom 改為 Yiqunren（議群人）；環境變數前綴改為 `YIQUNREN_`，狀態目錄名與 repo 名稱改為 `yiqunren`。
+- 2026-11-13：定案技術選型（第 7 節第 5 項）：Python 3.12＋FastAPI／Uvicorn、SQLite（標準庫）、React＋TypeScript＋Vite、SSE。
