@@ -61,7 +61,8 @@ uv sync
 
 - `GET /api/health`：健康檢查。
 - `POST /api/turns`：送出一個私聊回合，內容是 JSON：`request_id`、`conversation_id`（都是前端產生的 UUID）、`member`、`text`。同一個 `request_id` 重送會回傳原本的回合，不會重複執行；同一段對話同時只能有一個進行中的回合。
-- `GET /api/turns/{id}`：查回合狀態（執行中、完成、失敗、已中斷、未知），含送出的訊息與回覆。
+- `POST /api/turns/{id}/interrupt`：中斷進行中的回合，回 202；結果由 SSE 的結束事件告知：轉接器確認程序已停止才是「已中斷」，無法確認時是「未知」。回合已結束時回 409。
+- `GET /api/turns/{id}`：查回合狀態（執行中、完成、失敗、已中斷、未知），含送出的訊息與回覆。單回合逾時目前固定 15 分鐘（成員設定做好後改由各成員設定）：逾時且確認程序停止是「失敗（逾時）」，無法確認時是「未知」。
 - `GET /api/conversations/{conversation_id}`：依時間順序列出一段對話的所有回合（訊息與回覆）。
 - `DELETE /api/conversations/{conversation_id}`：刪除一整段對話的訊息、回覆與事件；還有進行中回合時回 409。刪除後用同一個 `request_id` 重送會回 410，不會重新執行。
 - `GET /api/turns/{id}/events`：用 SSE 接收進度與結束事件。不帶 `Last-Event-ID` 時從頭重送，帶了就只補送之後的事件。

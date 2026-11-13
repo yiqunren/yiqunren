@@ -14,8 +14,10 @@ from app.web.fake_runner import FakeRunner
 TELEMETRY_OFF = {'auto_configure': False, 'tracing': False, 'metrics': False, 'logs': False}
 
 
-def create_app(settings: config.Settings | None = None, *, runner=None) -> FastAPI:
-    """runner：私聊回合的執行者（測試注入用）；沒給時，只有設定 fake_turns 才用假轉接器。"""
+def create_app(settings: config.Settings | None = None, *, runner=None,
+               turn_timeout: float = turns.TIMEOUT_DEFAULT) -> FastAPI:
+    """runner：私聊回合的執行者（測試注入用）；沒給時，只有設定 fake_turns 才用假轉接器。
+    turn_timeout：單回合逾時秒數；成員設定（FR-1）做好之前一律用預設 15 分鐘，測試可以調短。"""
     settings = settings or config.load()
     if runner is None and settings.fake_turns:
         runner = FakeRunner()
@@ -23,7 +25,7 @@ def create_app(settings: config.Settings | None = None, *, runner=None) -> FastA
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.db_path = db.prepare(settings.state_dir)
-        app.state.turns = turns.TurnService(app.state.db_path, runner)
+        app.state.turns = turns.TurnService(app.state.db_path, runner, timeout=turn_timeout)
         app.state.turns.recover()
         try:
             yield

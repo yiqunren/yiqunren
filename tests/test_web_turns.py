@@ -53,9 +53,10 @@ class TurnApiTest(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.settings = Settings(host='127.0.0.1', port=8420, state_dir=Path(self.temporary.name) / 'state')
 
-    def client(self, runner=None, settings=None):
+    def client(self, runner=None, settings=None, **options):
         client = TestClient(create_app(settings or self.settings,
-                                       runner=runner if runner is not None else FakeRunner(steps=3, tick=0.02)))
+                                       runner=runner if runner is not None else FakeRunner(steps=3, tick=0.02),
+                                       **options))
         client.__enter__()
         self.addCleanup(client.__exit__, None, None, None)
         return client
@@ -178,6 +179,63 @@ class TurnApiTest(unittest.TestCase):
         self.assertEqual(client.delete('/api/conversations/not-a-uuid').status_code, 422)
         self.assertEqual(client.get('/api/conversations/not-a-uuid').status_code, 422)
 
+    def test_interrupt_marks_interrupted_after_runner_confirms_stop(self):
+        client = self.client(runner=FakeRunner(steps=200, tick=0.05))
+        body = self.body()
+        client.post('/api/turns', json=body)
+        self.assertEqual(read_events_until(client, body['request_id'], 1)[0]['event'], 'progress')
+        response = client.post('/api/turns/%s/interrupt' % body['request_id'])
+        self.assertEqual(response.status_code, 202)
+        events = read_events(client, body['request_id'])
+        self.assertEqual(events[-1]['data'], {'state': 'interrupted', 'error_kind': None, 'reply': None})
+        self.assertEqual(client.get('/api/turns/' + body['request_id']).json()['turn']['state'], 'interrupted')
+        again = client.post('/api/turns/%s/interrupt' % body['request_id'])
+        self.assertEqual((again.status_code, again.json()['turn']['state']), (409, 'interrupted'))
+        # 重送同一個請求回傳原結果，不重新執行；同一段對話可以開新回合。
+        resent = client.post('/api/turns', json=body)
+        self.assertEqual((resent.status_code, resent.json()['turn']['state']), (200, 'interrupted'))
+        self.assertEqual(client.post('/api/turns', json={**body, 'request_id': str(uuid.uuid4())}).status_code, 202)
+
+    def test_interrupt_without_confirmed_stop_is_unknown(self):
+        client = self.client(runner=FakeRunner(steps=200, tick=0.05, stop_confirmed=False))
+        body = self.body()
+        client.post('/api/turns', json=body)
+        read_events_until(client, body['request_id'], 1)
+        self.assertEqual(client.post('/api/turns/%s/interrupt' % body['request_id']).status_code, 202)
+        self.assertEqual(read_events(client, body['request_id'])[-1]['data']['state'], 'unknown')
+
+    def test_interrupt_finished_or_missing_turn(self):
+        client = self.client()
+        body = self.body()
+        client.post('/api/turns', json=body)
+        read_events(client, body['request_id'])
+        response = client.post('/api/turns/%s/interrupt' % body['request_id'])
+        self.assertEqual((response.status_code, response.json()['turn']['state']), (409, 'completed'))
+        self.assertEqual(client.post('/api/turns/%s/interrupt' % uuid.uuid4()).status_code, 404)
+
+    def test_timeout_fails_with_timeout_category(self):
+        client = self.client(runner=FakeRunner(steps=200, tick=0.05), turn_timeout=0.3)
+        body = self.body()
+        client.post('/api/turns', json=body)
+        events = read_events(client, body['request_id'])
+        self.assertGreaterEqual(len(events), 2)  # 逾時前有進度
+        self.assertEqual(events[-1]['data'], {'state': 'failed', 'error_kind': 'timeout', 'reply': None})
+
+    def test_timeout_without_confirmed_stop_is_unknown(self):
+        client = self.client(runner=FakeRunner(steps=200, tick=0.05, stop_confirmed=False), turn_timeout=0.3)
+        body = self.body()
+        client.post('/api/turns', json=body)
+        self.assertEqual(read_events(client, body['request_id'])[-1]['data']['state'], 'unknown')
+
+    def test_runner_own_timeout_error_is_not_reported_as_turn_timeout(self):
+        class OwnTimeout:
+            async def __call__(self, member, text, emit):
+                raise TimeoutError('provider socket timed out')
+        client = self.client(runner=OwnTimeout())
+        body = self.body()
+        client.post('/api/turns', json=body)
+        self.assertEqual(read_events(client, body['request_id'])[-1]['data']['error_kind'], 'internal_error')
+
     def test_without_runner_turns_are_refused_and_nothing_is_stored(self):
         client = TestClient(create_app(self.settings))
         with client:
@@ -198,6 +256,36 @@ class TurnApiTest(unittest.TestCase):
                 self.assertEqual(client.post('/api/turns', json=self.body(**changes)).status_code, 422)
         self.assertEqual(client.get('/api/turns/' + str(uuid.uuid4())).status_code, 404)
         self.assertEqual(client.get('/api/turns/%s/events' % uuid.uuid4()).status_code, 404)
+
+
+class InterruptBeforeStartTest(unittest.TestCase):
+    """中斷在回合工作開始執行前就送到：執行者不會被呼叫，回合直接標為已中斷。"""
+
+    def test_interrupt_before_runner_starts(self):
+        from app.storage import db
+        from app.web.turns import TurnRequest, TurnService
+
+        with tempfile.TemporaryDirectory(prefix='yiqunren-interrupt-test-') as temporary:
+            path = db.prepare(Path(temporary) / 'state')
+            called = []
+
+            async def runner(member, text, emit):
+                called.append(True)
+                return 'should not run'
+
+            async def scenario():
+                service = TurnService(path, runner)
+                body = TurnRequest(request_id=str(uuid.uuid4()), conversation_id=str(uuid.uuid4()),
+                                   member='m1', text='hi')
+                self.assertEqual(service.start(body)[0], 202)
+                self.assertEqual(service.interrupt(body.request_id)[0], 202)  # 同步呼叫，中間沒有讓工作開始
+                await asyncio.sleep(0.05)
+                return service.get(body.request_id)['state'], service.events_after(body.request_id, 0)
+
+            state, events = asyncio.run(scenario())
+        self.assertEqual(called, [])
+        self.assertEqual(state, 'interrupted')
+        self.assertEqual(events, [(1, 'done', {'state': 'interrupted', 'error_kind': None})])
 
 
 def read_events_until(client, turn_id, count):
