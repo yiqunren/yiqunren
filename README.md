@@ -40,13 +40,25 @@ MVP 先接 Codex 與 Grok；Claude Code 是第三家，先做 API key 模式。�
 
 ## 開發者：跑測試
 
-需要 Python 3.10 以上。目前只在 Linux（WSL）上測試過。
+需要 Python 3.12 以上。目前只在 Linux（WSL）上測試過。
+
+Ubuntu 24.04 內建 Python 3.12，可直接用這組指令：
 
 ```bash
 git clone https://github.com/yiqunren/yiqunren.git
 cd yiqunren
 python3 -m venv .venv
 .venv/bin/pip install pytest
+.venv/bin/pytest
+```
+
+Ubuntu 22.04 內建的是 Python 3.10，請改用 [uv](https://docs.astral.sh/uv/) 下載 3.12 並建立虛擬環境，其餘步驟相同：
+
+```bash
+git clone https://github.com/yiqunren/yiqunren.git
+cd yiqunren
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python pytest
 .venv/bin/pytest
 ```
 
