@@ -13,7 +13,7 @@ from app.web.config import Settings
 from app.web.fake_runner import FakeRunner
 from app.web.runner import Failed, Interrupted, Runner, Unknown
 from app.web.server import create_app
-from app.web.turns import MAX_MESSAGE_CHARS
+from app.web.turns import MAX_MESSAGE_CHARS, MAX_REPLY_BYTES
 
 
 def read_events(client, turn_id, last_event_id=None):
@@ -57,6 +57,18 @@ class RaisingRunner(Runner):
     async def run(self, turn, hooks):
         if self.error is not None:
             raise self.error
+
+
+class ReplyRunner(Runner):
+    """直接交出指定的回覆。"""
+    def __init__(self, reply):
+        self.reply, self.save_raised = reply, None
+
+    async def run(self, turn, hooks):
+        try:
+            hooks.save(self.reply)
+        except Exception as exc:
+            self.save_raised = exc
 
 
 class UnreachableStopRunner(BlockingRunner):
@@ -357,6 +369,30 @@ class TurnApiTest(unittest.TestCase):
         self.assertEqual(DoubleSaveRunner.second, 'RuntimeError')
         turn = client.get('/api/turns/' + body['request_id']).json()['turn']
         self.assertEqual((turn['state'], turn['reply']), ('completed', '第一次'))
+
+    def test_reply_over_limit_fails_without_storing_anything(self):
+        self.assertEqual(MAX_REPLY_BYTES, 100_000)  # FR-2 預設 100 KB，UTF-8 位元組
+        cases = [('x' * 100_000, 'completed'), ('中' * 33_333, 'completed'),  # 100,000／99,999 位元組
+                 ('x' * 100_001, 'failed'), ('中' * 33_334, 'failed')]  # 100,001／100,002 位元組；中文字數仍少於上限
+        for reply, state in cases:
+            with self.subTest(chars=len(reply), bytes=len(reply.encode())):
+                runner = ReplyRunner(reply)
+                client = self.client(runner=runner)
+                body = self.body()
+                client.post('/api/turns', json=body)
+                done = read_events(client, body['request_id'])[-1]['data']
+                turn = client.get('/api/turns/' + body['request_id']).json()['turn']
+                listed = client.get('/api/conversations/' + body['conversation_id']).json()['turns']
+                self.assertIsNone(runner.save_raised)  # 兩種結果都寫進去了，轉接器可以照常 ack
+                if state == 'completed':
+                    self.assertEqual((done['state'], done['error_kind'], done['reply']), ('completed', None, reply))
+                    self.assertEqual(turn['reply'], reply)
+                else:
+                    # 明確告知、不截斷：沒有回覆，也沒有截斷後的內容。
+                    self.assertEqual(done, {'state': 'failed', 'error_kind': 'reply_too_long', 'reply': None})
+                    self.assertEqual((turn['state'], turn['error_kind'], turn['reply']),
+                                     ('failed', 'reply_too_long', None))
+                    self.assertEqual([t['reply'] for t in listed], [None])
 
     def test_interrupt_that_does_not_reach_runner_is_reported(self):
         client = self.client(runner=UnreachableStopRunner())

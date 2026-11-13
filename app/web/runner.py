@@ -7,8 +7,10 @@
     async def stop(self, turn_id: str) -> None
 
 結果怎麼回報（FR-2）：
-- 完成：呼叫 hooks.save(回覆文字)，再正常返回。save 返回時回合已標為完成並寫進資料庫；
-  遠端若要等 App 存好才丟掉回覆（例如 worker_turn 的 ack），必須在 save 返回之後才通知。
+- 完成：呼叫 hooks.save(回覆文字)，再正常返回。save 返回時結果已寫進資料庫：通常是完成；
+  回覆超過長度上限（FR-2）時是「失敗（回覆過長）」，回覆不存。轉接器不用分辨這兩種情況。
+  遠端若要等 App 存好才丟掉回覆（例如 worker_turn 的 ack），必須在 save 返回之後才通知；
+  save 丟例外表示沒有寫進去，這時不可以通知遠端丟掉回覆。
 - 擁有者中斷，且確認程序已經停止：丟 Interrupted。
 - 結果無法確認（停止未確認、橋接重啟、查回逾時、連不上橋接）：丟 Unknown(原因)。
 - 失敗：丟 Failed(分類)。分類不在固定清單時記為 internal_error；其他例外也一律是 internal_error。

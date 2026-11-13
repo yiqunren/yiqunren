@@ -20,7 +20,8 @@ FINAL_STATES = frozenset({COMPLETED, FAILED, INTERRUPTED, UNKNOWN})
 # 失敗原因的固定分類；接上真的轉接器時再加（例如額度不足、認證失敗、逾時）。
 INTERNAL_ERROR = 'internal_error'
 TIMEOUT = 'timeout'  # 超過單回合逾時，且已確認程序停止
-ERROR_KINDS = frozenset({INTERNAL_ERROR, TIMEOUT})
+REPLY_TOO_LONG = 'reply_too_long'  # 回覆超過長度上限，回覆不存（FR-2）
+ERROR_KINDS = frozenset({INTERNAL_ERROR, TIMEOUT, REPLY_TOO_LONG})
 
 PROGRESS = 'progress'
 STOPPING = 'stopping'  # 中斷要求已送達轉接器，等它確認程序停止

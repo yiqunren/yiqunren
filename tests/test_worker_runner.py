@@ -53,7 +53,7 @@ class Bot:
 
     def __init__(self):
         self.release = asyncio.Event()
-        self.stop_confirmed, self.failure = True, None
+        self.stop_confirmed, self.failure, self.content = True, None, None
 
     async def __call__(self, fields, progress, guard):
         progress(dict(PROGRESS))
@@ -65,7 +65,7 @@ class Bot:
             raise
         if self.failure:
             raise RuntimeError(self.failure)
-        return {'content': 'reply:' + fields['message']}
+        return {'content': self.content if self.content is not None else 'reply:' + fields['message']}
 
 
 class Bridge:
@@ -402,6 +402,17 @@ class HttpThroughBridgeTest(BridgeEnvironment, unittest.TestCase):
             self.assertEqual(events[-1]['data'], {'state': 'completed', 'error_kind': None, 'reply': 'reply:hello'})
             wait_for(lambda: self.bridge.calls()[0]['acked'])
             self.assertEqual(self.bridge.calls()[0]['result'], None)
+
+    def test_reply_over_limit_through_bridge_fails_and_is_acked(self):
+        # 100,001 位元組：超過 FR-2 上限，但還在 socket 單行上限（cli_socket.MAX_RESPONSE）以內。
+        self.bridge.bridge.bot.content = 'x' * 100_001
+        self.bridge.release()
+        body = self.body()
+        with self.app() as client:
+            client.post('/api/turns', json=body)
+            events = read_events(client, body['request_id'])
+            self.assertEqual(events[-1]['data'], {'state': 'failed', 'error_kind': 'reply_too_long', 'reply': None})
+            wait_for(lambda: self.bridge.calls()[0]['acked'])  # 結果已寫進資料庫，橋接可以丟掉回覆
 
     def test_interrupt_through_bridge(self):
         body = self.body()

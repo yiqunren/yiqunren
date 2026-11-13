@@ -23,6 +23,7 @@ from app.web.runner import Failed, Hooks, Interrupted, TurnInput, Unknown
 
 KIND = 'private_turn'
 MAX_MESSAGE_CHARS = 32_000  # 預設值，可調（NFR-3 限制大小）
+MAX_REPLY_BYTES = 100_000  # FR-2 回覆長度上限（UTF-8 位元組），預設值
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -214,7 +215,7 @@ class TurnService:
 
     async def _drive(self, turn_id: str, call) -> None:
         """執行 call(hooks)（runner.run 或 resume），把結果對應到回合狀態（見 app/web/runner.py）。"""
-        saved = False
+        settled = False  # save 已寫入結果：完成，或因回覆過長而失敗
 
         def began(record: dict) -> None:  # 可能在其他執行緒
             connection = self._connect()
@@ -233,18 +234,25 @@ class TurnService:
             self._bump(turn_id)
 
         def save(reply: str) -> None:
-            nonlocal saved
+            nonlocal settled
             if not isinstance(reply, str):
                 raise TypeError('回覆必須是文字')
-            if not self._finish(turn_id, turns.COMPLETED, reply=reply):
-                # 沒存下就不能讓轉接器通知遠端丟掉回覆。
-                raise RuntimeError('回合已不在進行中，回覆沒有存下')
-            saved = True
+            size = len(reply.encode('utf-8'))
+            if size > MAX_REPLY_BYTES:
+                # FR-2：明確告知、不截斷，回覆一個字都不存。照常返回，轉接器可以讓遠端丟掉回覆。
+                logger.warning('回合 %s 失敗：回覆過長（%d 位元組）', turn_id, size)
+                result = {'state': turns.FAILED, 'error_kind': turns.REPLY_TOO_LONG}
+            else:
+                result = {'state': turns.COMPLETED, 'reply': reply}
+            if not self._finish(turn_id, **result):
+                # 沒寫進去就不能讓轉接器通知遠端丟掉回覆。
+                raise RuntimeError('回合已不在進行中，結果沒有存下')
+            settled = True
 
         outcome = None
         try:
             await call(Hooks(began, progress, save))
-            if not saved:
+            if not settled:
                 logger.warning('回合 %s 失敗：轉接器沒有交出回覆', turn_id)
                 outcome = {'state': turns.FAILED, 'error_kind': turns.INTERNAL_ERROR}
         except Interrupted:
@@ -260,7 +268,7 @@ class TurnService:
             # 只記錄分類與例外類型，不記錄訊息內容（NFR-6）。
             logger.warning('回合 %s 失敗：%s', turn_id, type(exc).__name__)
             outcome = {'state': turns.FAILED, 'error_kind': turns.INTERNAL_ERROR}
-        if outcome is not None and not saved:
+        if outcome is not None and not settled:
             self._finish(turn_id, **outcome)
 
     async def close(self) -> None:
