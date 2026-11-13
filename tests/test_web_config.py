@@ -38,6 +38,14 @@ class ConfigTest(unittest.TestCase):
             with self.subTest(env=env), self.assertRaises(ConfigError):
                 load({**HOME, **env})
 
+    def test_fake_turns_is_off_unless_explicitly_enabled(self):
+        self.assertFalse(load(dict(HOME)).fake_turns)
+        self.assertFalse(load({**HOME, 'YIQUNREN_FAKE_TURNS': '0'}).fake_turns)
+        self.assertTrue(load({**HOME, 'YIQUNREN_FAKE_TURNS': '1'}).fake_turns)
+        for value in ('true', 'yes', ' 1'):
+            with self.subTest(value=value), self.assertRaises(ConfigError):
+                load({**HOME, 'YIQUNREN_FAKE_TURNS': value})
+
     def test_missing_home_requires_explicit_state_dir(self):
         with self.assertRaises(ConfigError):
             load({})

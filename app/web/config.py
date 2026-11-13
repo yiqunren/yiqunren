@@ -20,6 +20,8 @@ class Settings:
     host: str
     port: int
     state_dir: Path
+    # 開發用：私聊回合改由假轉接器回覆，不呼叫任何 AI。
+    fake_turns: bool = False
 
 
 def default_state_dir(env) -> Path:
@@ -51,4 +53,8 @@ def load(env=None) -> Settings:
     if not state_dir.is_absolute():
         raise ConfigError('YIQUNREN_STATE_DIR 必須是絕對路徑')
 
-    return Settings(host=host, port=int(raw_port), state_dir=state_dir)
+    raw_fake = env.get('YIQUNREN_FAKE_TURNS', '')
+    if raw_fake not in ('', '0', '1'):
+        raise ConfigError('YIQUNREN_FAKE_TURNS 只能是 0 或 1')
+
+    return Settings(host=host, port=int(raw_port), state_dir=state_dir, fake_turns=raw_fake == '1')

@@ -25,6 +25,29 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         ' result TEXT'
         ')',
     ),
+    (
+        # FR-2 私聊回合；id 就是送出時的請求 ID。不存使用者訊息全文。
+        'CREATE TABLE turns ('
+        ' id TEXT PRIMARY KEY REFERENCES requests(id),'
+        ' conversation_id TEXT NOT NULL,'
+        ' member TEXT NOT NULL,'
+        ' state TEXT NOT NULL,'
+        ' error_kind TEXT,'
+        ' reply TEXT,'
+        ' started REAL NOT NULL,'
+        ' finished REAL'
+        ')',
+        # 同一段對話同時只能有一個進行中的回合。
+        "CREATE UNIQUE INDEX turns_one_running ON turns(conversation_id) WHERE state = 'running'",
+        'CREATE TABLE turn_events ('
+        ' turn_id TEXT NOT NULL REFERENCES turns(id),'
+        ' seq INTEGER NOT NULL,'
+        ' kind TEXT NOT NULL,'
+        ' data TEXT NOT NULL,'
+        ' created REAL NOT NULL,'
+        ' PRIMARY KEY (turn_id, seq)'
+        ')',
+    ),
 )
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -40,6 +63,7 @@ def database_path(state_dir: Path) -> Path:
 def connect(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(str(path), timeout=5, isolation_level=None)
     connection.row_factory = sqlite3.Row
+    connection.execute('PRAGMA foreign_keys = ON')
     return connection
 
 

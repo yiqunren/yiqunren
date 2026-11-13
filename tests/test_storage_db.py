@@ -36,6 +36,24 @@ class DatabaseTest(unittest.TestCase):
         self.addCleanup(connection.close)
         self.assertEqual(connection.execute('SELECT COUNT(*) FROM requests').fetchone()[0], 1)
 
+    def test_version_1_database_is_upgraded_and_keeps_data(self):
+        self.state.mkdir(mode=0o700)
+        path = self.state / db.DB_NAME
+        path.touch(mode=0o600)
+        connection = db.connect(path)
+        for statement in db.MIGRATIONS[0]:
+            connection.execute(statement)
+        connection.execute('PRAGMA user_version = 1')
+        connection.execute("INSERT INTO requests VALUES ('x', 'k', 'h', 'claimed', 1, 1, NULL)")
+        connection.close()
+        db.prepare(self.state)
+        connection = db.connect(path)
+        self.addCleanup(connection.close)
+        self.assertEqual(db.schema_version(connection), db.SCHEMA_VERSION)
+        self.assertEqual(connection.execute('SELECT COUNT(*) FROM requests').fetchone()[0], 1)
+        tables = {row['name'] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertTrue({'requests', 'turns', 'turn_events'} <= tables)
+
     def test_newer_database_is_refused(self):
         path = db.prepare(self.state)
         connection = db.connect(path)

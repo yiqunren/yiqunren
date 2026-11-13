@@ -1,0 +1,197 @@
+"""FR-2 私聊回合的 HTTP 介面：POST 送出（NFR-1 請求 ID）、GET 查狀態、SSE 推送事件。
+
+回合在伺服器端執行，不受瀏覽器連線影響。SSE 每次都從資料庫讀事件：沒帶 Last-Event-ID 時從頭重送
+（網頁重新整理），有帶時只補送之後的事件（網路中斷後自動重連）。
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
+from fastapi.sse import EventSourceResponse, ServerSentEvent
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.services.turn_contract import request_id as checked_uuid
+from app.storage import db, requests, turns
+
+
+KIND = 'private_turn'
+MAX_MESSAGE_CHARS = 32_000  # 預設值，可調（NFR-3 限制大小）
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+
+class TurnRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    request_id: str
+    conversation_id: str
+    member: str = Field(min_length=1, max_length=160)
+    text: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
+
+    @field_validator('request_id', 'conversation_id')
+    @classmethod
+    def _uuid(cls, value: str) -> str:
+        return checked_uuid(value)
+
+
+def snapshot(row) -> dict:
+    return {
+        'id': row['id'],
+        'conversation_id': row['conversation_id'],
+        'member': row['member'],
+        'state': row['state'],
+        'error_kind': row['error_kind'],
+        'reply': row['reply'],
+        'started': row['started'],
+        'finished': row['finished'],
+    }
+
+
+class TurnService:
+    """一個 app 一份。runner 是 async (member, text, emit) -> 回覆文字；None 表示還沒接上轉接器。"""
+
+    def __init__(self, db_path, runner, clock=time.time):
+        self.db_path, self.runner, self.clock = db_path, runner, clock
+        self._tasks: set[asyncio.Task] = set()
+        self._versions: dict[str, int] = {}
+        self._changed = asyncio.Condition()
+
+    def _connect(self):
+        return db.connect(self.db_path)
+
+    def recover(self) -> list[str]:
+        connection = self._connect()
+        try:
+            return turns.mark_running_unknown(connection, self.clock())
+        finally:
+            connection.close()
+
+    def get(self, turn_id: str):
+        connection = self._connect()
+        try:
+            return turns.get(connection, turn_id)
+        finally:
+            connection.close()
+
+    def events_after(self, turn_id: str, after: int) -> list[tuple[int, str, dict]]:
+        connection = self._connect()
+        try:
+            return turns.events_after(connection, turn_id, after)
+        finally:
+            connection.close()
+
+    def version(self, turn_id: str) -> int:
+        return self._versions.get(turn_id, 0)
+
+    async def wait_changed(self, turn_id: str, seen: int) -> None:
+        async with self._changed:
+            await self._changed.wait_for(lambda: self.version(turn_id) != seen)
+
+    async def _bump(self, turn_id: str) -> None:
+        async with self._changed:
+            self._versions[turn_id] = self.version(turn_id) + 1
+            self._changed.notify_all()
+
+    def start(self, body: TurnRequest) -> tuple[int, dict]:
+        if self.runner is None:
+            return 503, {'detail': '尚未接上任何轉接器'}
+        payload = {'conversation_id': body.conversation_id, 'member': body.member, 'text': body.text}
+        connection = self._connect()
+        try:
+            claim = requests.claim(
+                connection, body.request_id, KIND, payload, clock=self.clock,
+                on_claim=lambda c, now: turns.insert_running(c, body.request_id, body.conversation_id,
+                                                             body.member, now))
+            row = turns.get(connection, body.request_id)
+        except turns.ConversationBusy:
+            return 409, {'detail': '這段對話還有進行中的回合'}
+        finally:
+            connection.close()
+        if claim.outcome == requests.REJECTED or row is None:
+            return 409, {'detail': '這個請求 ID 已用於不同內容'}
+        if claim.outcome == requests.CLAIMED:
+            task = asyncio.create_task(self._run(body.request_id, body.member, body.text))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+            return 202, {'turn': snapshot(row)}
+        return 200, {'turn': snapshot(row)}
+
+    async def _run(self, turn_id: str, member: str, text: str) -> None:
+        async def emit(data: dict) -> None:
+            connection = self._connect()
+            try:
+                turns.append_progress(connection, turn_id, data, self.clock())
+            finally:
+                connection.close()
+            await self._bump(turn_id)
+
+        try:
+            reply = await self.runner(member, text, emit)
+            if not isinstance(reply, str):
+                raise TypeError('回覆必須是文字')
+        except asyncio.CancelledError:
+            raise  # 伺服器關閉：回合留在進行中，下次啟動時標為未知
+        except Exception as exc:
+            # 只記錄分類與例外類型，不記錄訊息內容（NFR-6）。
+            logger.warning('回合 %s 失敗：%s', turn_id, type(exc).__name__)
+            outcome = {'state': turns.FAILED, 'error_kind': turns.INTERNAL_ERROR}
+        else:
+            outcome = {'state': turns.COMPLETED, 'reply': reply}
+        connection = self._connect()
+        try:
+            turns.finish(connection, turn_id, now=self.clock(), **outcome)
+        finally:
+            connection.close()
+        await self._bump(turn_id)
+
+    async def close(self) -> None:
+        for task in list(self._tasks):
+            task.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+
+
+def _service(request: Request) -> TurnService:
+    return request.app.state.turns
+
+
+def _existing_turn(turn_id: str, service: Annotated[TurnService, Depends(_service)]):
+    row = service.get(turn_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail='找不到這個回合')
+    return row
+
+
+@router.post('/api/turns')
+async def start_turn(body: TurnRequest, service: Annotated[TurnService, Depends(_service)]):
+    status, content = service.start(body)
+    return JSONResponse(content, status_code=status)
+
+
+@router.get('/api/turns/{turn_id}')
+def get_turn(row: Annotated[object, Depends(_existing_turn)]):
+    return {'turn': snapshot(row)}
+
+
+@router.get('/api/turns/{turn_id}/events', response_class=EventSourceResponse)
+async def turn_events(turn_id: str, row: Annotated[object, Depends(_existing_turn)],
+                      service: Annotated[TurnService, Depends(_service)],
+                      last_event_id: Annotated[str | None, Header()] = None):
+    after = int(last_event_id) if last_event_id and last_event_id.isascii() and last_event_id.isdigit() else 0
+    while True:
+        seen = service.version(turn_id)
+        pending = service.events_after(turn_id, after)
+        for seq, kind, data in pending:
+            if kind == turns.DONE:
+                data = {**data, 'reply': service.get(turn_id)['reply']}
+            yield ServerSentEvent(id=str(seq), event=kind, data=data)
+            after = seq
+            if kind == turns.DONE:
+                return
+        if not pending:
+            await service.wait_changed(turn_id, seen)

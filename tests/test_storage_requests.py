@@ -47,6 +47,23 @@ class RequestClaimTest(unittest.TestCase):
         row = self.connection.execute('SELECT * FROM requests').fetchone()
         self.assertNotIn('secret-looking prompt', ' '.join(str(value) for value in tuple(row)))
 
+    def test_on_claim_runs_in_the_same_transaction(self):
+        seen = []
+        claim(self.connection, self.id, 'private_turn', {'text': 'a'},
+              on_claim=lambda connection, now: seen.append(connection.in_transaction))
+        self.assertEqual(seen, [True])
+        claim(self.connection, self.id, 'private_turn', {'text': 'a'}, on_claim=lambda c, now: seen.append('again'))
+        self.assertEqual(seen, [True])  # 重送不再呼叫
+
+    def test_on_claim_failure_rolls_back_the_claim(self):
+        def refuse(connection, now):
+            raise LookupError('busy')
+        with self.assertRaises(LookupError):
+            claim(self.connection, self.id, 'private_turn', {'text': 'a'}, on_claim=refuse)
+        self.assertFalse(self.connection.in_transaction)
+        self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM requests').fetchone()[0], 0)
+        self.assertEqual(claim(self.connection, self.id, 'private_turn', {'text': 'a'}).outcome, CLAIMED)
+
     def test_invalid_input_is_rejected_without_writing(self):
         for request_id, kind in (('not-a-uuid', 'private_turn'), (self.id.upper(), 'private_turn'),
                                  (None, 'private_turn'), (self.id, ''), (self.id, None)):

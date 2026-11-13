@@ -51,11 +51,20 @@ uv sync
 .venv/bin/pytest
 ```
 
-啟動後端（目前只有健康檢查 `GET /api/health`，還沒有網頁介面）：
+啟動後端（還沒有網頁介面，也還沒接上真的 AI）：
 
 ```bash
 .venv/bin/python -m app.web
 ```
+
+目前的 API：
+
+- `GET /api/health`：健康檢查。
+- `POST /api/turns`：送出一個私聊回合，內容是 JSON：`request_id`、`conversation_id`（都是前端產生的 UUID）、`member`、`text`。同一個 `request_id` 重送會回傳原本的回合，不會重複執行；同一段對話同時只能有一個進行中的回合。
+- `GET /api/turns/{id}`：查回合狀態（執行中、完成、失敗、已中斷、未知）。
+- `GET /api/turns/{id}/events`：用 SSE 接收進度與結束事件。不帶 `Last-Event-ID` 時從頭重送，帶了就只補送之後的事件。
+
+還沒接上轉接器之前，送出回合會回 503。開發時可設 `YIQUNREN_FAKE_TURNS=1`，改用假轉接器：它不呼叫任何 AI，送出幾個進度後回覆一段固定文字。
 
 預設只聽 `127.0.0.1:8420`，狀態資料庫放在 `~/.local/state/yiqunren/`（有設 `XDG_STATE_HOME` 時改放在它底下）。可用環境變數覆寫：
 
@@ -64,6 +73,7 @@ uv sync
 | `YIQUNREN_HOST` | 監聽的 IP 位址；改成其他位址就會開放給其他網路 | `127.0.0.1` |
 | `YIQUNREN_PORT` | 監聽的埠 | `8420` |
 | `YIQUNREN_STATE_DIR` | 狀態資料庫目錄（絕對路徑，權限必須是 0700） | `~/.local/state/yiqunren` |
+| `YIQUNREN_FAKE_TURNS` | 設成 `1` 時，私聊回合改由假轉接器回覆（只供開發） | `0` |
 
 資料庫建議放在 Linux 檔案系統上；放在 WSL 的 `/mnt/*` 底下會變慢，也不要讓 Windows 端的程式同時開這個檔。
 
