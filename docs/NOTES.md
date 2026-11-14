@@ -22,15 +22,22 @@
     - 逾時：由轉接器或它的橋接執行，秒數放在 `TurnInput.timeout`；服務層不再自己計時。
     - 伺服器關閉（asyncio 取消）時不停止遠端的回合。重啟後 `TurnService.recover()` 對有 `bridge_record` 的進行中回合呼叫 `resume` 接回；沒有身分、身分讀不出來、轉接器不支援接回（`NotImplementedError`）或沒有轉接器的，標為「未知」。
   - 真轉接器 `app/web/worker_runner.py`（`WorkerTurnRunner(provider, auth_mode=, fields=)`）：包住 `app/services/worker_turn.py`，沒有改 `worker_turn.py`、`turn_contract.py`、`turn_host.py`。`tests/test_worker_runner.py` 用同程序裡的真 `TurnHost`（經 Unix socket、testbot 轉接器）驗證完成後 ack、存失敗不 ack、中斷（確認與未確認）、中斷比 `turn_begin` 先到、橋接重啟後接回得到「未知」，以及 HTTP 到橋接的接回與中斷。它還沒接進設定，目前只能在建立 app 時用 `create_app(runner=…)` 注入。
-  - `YIQUNREN_FAKE_TURNS=1` 啟用假轉接器（`app/web/fake_runner.py`，不呼叫任何 AI，不支援接回）；沒有轉接器時送出回合回 503。
-- 截至 2026-11-13：`d34468c` 是最新的功能 commit；`pytest` 結果 330 passed（`-W error`）。`origin/main` 已推到 `8d3cb33`；之後的筆記更新不一定已推送，現況以 `git status` 為準。還沒有網頁介面、成員設定、橋接程式（見下方建議第 2 項）。
+  - `YIQUNREN_FAKE_TURNS=1` 啟用假轉接器（`app/web/fake_runner.py`，不呼叫任何 AI，不支援接回，所有轉接器的成員共用）；沒有轉接器時送出回合回 503。
+- FR-1 成員設定的後端（2026-11-14，`b52577f` SPEC、`86b8d94` 實作）：
+  - SPEC FR-1 補了：轉接器新增後不能改；停用＝設定保留、不能送新回合、已在跑的回合不受影響；刪除＝拿掉設定、保留對話（回合記著當時的成員名稱），有進行中回合時不能刪；模型清單檢查的分期；成員狀態的推算方式；私聊依成員設定執行。
+  - API（`app/web/members.py`、`app/storage/members.py`）：`POST /api/members`（NFR-1 請求 ID，也是成員 ID；刪除後重送回 410）、`GET /api/members`、`GET /api/members/{id}`、`PATCH /api/members/{id}`（含 `enabled` 停用／啟用；`effort` 送 null 清除）、`DELETE /api/members/{id}`。轉接器、認證模式、模型、推理強度能不能設一律查轉接器登記處；逾時 1～60 分鐘整數，預設 15；訂閱 CLI 模式回傳 `terms_notice`；狀態 `running`／`needs_review`（最近一個回合未知）／`idle`。
+  - 相容性變更：`POST /api/turns` 的 `member` 從任意文字改成必須是成員 ID（UUID）。成員不存在 422、已停用 409、該轉接器沒有執行者 503，三種都不留紀錄；成員檢查與寫入回合在同一個交易。回合帶入成員的轉接器、模型、推理強度、認證模式與逾時（`TurnInput` 多了 `adapter`、`model`、`effort`、`auth_mode`）。
+  - 執行者可以是單一個（所有轉接器共用）或 `{轉接器代號: 執行者}`；`create_app(turn_timeout=)` 只剩測試縮短逾時用，`None` 表示用成員設定。`WorkerTurnRunner` 的認證模式改取自回合，拿掉建構參數。
+  - 資料庫第 5 版：新增 `members` 表（不存憑證；`timeout` 存秒數）；`turns` 加 `member_name`、`adapter` 兩欄（第 5 版之前的回合這兩欄是空的）與 `turns_member` 索引。
+  - 沒做：前端；列出轉接器與其支援項目的 API（做畫面時需要）；依各家模型清單檢查模型名稱（SPEC 分期，等轉接器能提供清單）；FR-10 的「已核對」確認動作。
+- 截至 2026-11-14：`86b8d94` 是最新的功能 commit；`pytest` 結果 343 passed（`-W error`）。`origin/main` 已推到 `86b8d94`；之後的筆記更新不一定已推送，現況以 `git status` 為準。還沒有網頁介面、橋接程式（見下方建議第 2 項）。
 - 建議的下一步（建議，不是決定）：
   1. （已完成，`95e69a8` SPEC、`d34468c` 實作）FR-2 回覆長度上限：UTF-8 超過 100,000 位元組時回合失敗，分類 `reply_too_long`，回覆不存、不截斷；檢查在服務層 `save`。限制：橋接每次回覆是一行，單行上限 120,000 位元組（`cli_socket.MAX_RESPONSE`），橋接若回傳更大的一行，`worker_turn` 會當成連線失敗，回合變成「未知」而不是「回覆過長」；要明確告知得由橋接端自己先檢查 100,000 位元組並回報，做橋接與協定第 3 版時一起處理。
   2. 接 Codex 的真實轉接器。包住 `worker_turn` 的 `WorkerTurnRunner` 已經有了，剩下的是：
      - 橋接程式從哪來（決定 3，2026-11-14 定案：先請規格側審查匯入舊專案的 `codex_host_bridge`，審查不過或依賴太多再改成本 repo 自己寫；審查結果還沒回來，見「仍待決定」）：repo 裡目前只有 `scripts/turn_host.py`（橋接共用的回合管理）與 `scripts/private_cli.py`，沒有可以啟動、監聽 socket 的橋接程式。
      - 把它接進設定與 `create_app`（成員、認證模式、`fields` 怎麼組：Codex 的欄位是 message、thread_id、workspace、model、effort）。
      - 橋接協定第 3 版加上結構化的錯誤分類（`error_kind`），才分得出 `timeout` 與 `internal_error`；目前橋接逾時回報為一般失敗，只能記成 `internal_error`。決定 1：等做橋接時一起加。
-  3. FR-1 成員設定（讓逾時、模型、認證模式可以依成員設定）。
+  3. （後端已完成，`86b8d94`，見上方）FR-1 成員設定。剩下的見上方「沒做」。
   4. 範圍 C（NFR-3）：配對、Cookie、CSRF、大小與頻率限制；目前所有改變狀態的請求（送出、中斷、刪除對話）都還沒有防護，所以後端只適合在本機單人環境用。
   5. 前端（React＋TypeScript＋Vite），再接 Grok，最後做 FR-3 群聊。
 
