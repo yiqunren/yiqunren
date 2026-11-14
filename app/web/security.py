@@ -1,7 +1,8 @@
 """NFR-3 本機安全：Host 檢查、配對與 Cookie、CSRF、請求大小與頻率限制。
 
 所有 HTTP 請求都先經過 Guard 這個 ASGI 中介層，各路由不必自己檢查。檢查順序：
-Host → CSRF（GET、HEAD 以外）→ 配對（開放端點除外）→ 請求大小 → 頻率（GET、HEAD 以外）。
+Host → CSRF（GET、HEAD 以外）→ 配對（開放端點與網頁介面的檔案除外）→ 請求大小 → 頻率（GET、HEAD 以外）。
+所有回應（含被擋下的）都加上安全標頭。
 配對碼與瀏覽器憑證不寫進 log 或錯誤訊息；資料庫只存雜湊（app/storage/pairing.py）。
 """
 from __future__ import annotations
@@ -18,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import MutableHeaders
 
 from app.storage import db, pairing
 
@@ -37,6 +39,17 @@ SAFE_METHODS = frozenset({'GET', 'HEAD'})
 # 不必配對就能用的端點：健康檢查、配對、查詢配對狀態與登出。
 OPEN = frozenset({('GET', '/api/health'), ('HEAD', '/api/health'), ('POST', '/api/pair'),
                   ('GET', '/api/session'), ('HEAD', '/api/session'), ('DELETE', '/api/session')})
+# /api/ 以外的路徑是網頁介面本身的檔案（不含使用者資料），沒配對也能讀，否則配對畫面顯示不出來。
+API_PREFIX = '/api/'
+# 所有回應都帶。只允許本站的程式、樣式與連線，禁止行內程式碼與被其他網站嵌入。
+# Referrer-Policy 不能用 no-referrer：瀏覽器會把同源 POST 的 Origin 送成 null，被上面的 CSRF 檢查擋下。
+SECURITY_HEADERS = (
+    ('Content-Security-Policy',
+     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
+     "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"),
+    ('X-Content-Type-Options', 'nosniff'),
+    ('Referrer-Policy', 'same-origin'),
+)
 
 _HOST = re.compile(r'(?:\[([0-9a-f:.]+)\]|([0-9a-z.-]+))(?::([0-9]{1,5}))?')
 
@@ -181,6 +194,16 @@ def _replay(body: bytes, receive):
     return replay
 
 
+def _with_security_headers(send):
+    async def wrapped(message):
+        if message['type'] == 'http.response.start':
+            headers = MutableHeaders(raw=message.setdefault('headers', []))
+            for name, value in SECURITY_HEADERS:
+                headers[name] = value
+        await send(message)
+    return wrapped
+
+
 class Guard:
     """ASGI 中介層：所有 HTTP 請求先經過這裡。"""
 
@@ -192,9 +215,11 @@ class Guard:
         if scope['type'] != 'http':
             await self.app(scope, receive, send)
             return
+        send = _with_security_headers(send)  # 被擋下的回應也帶
         request = Request(scope)
         headers, method, path = request.headers, scope['method'], scope['path']
         unsafe = method not in SAFE_METHODS
+        page_file = not unsafe and not path.startswith(API_PREFIX)
         if not host_allowed(headers.get('host'), self.security.port):
             return await self._reject(scope, receive, send, 400, '不接受這個 Host，請用 127.0.0.1 或 localhost 連線')
         if unsafe and not same_origin(headers):
@@ -202,7 +227,7 @@ class Guard:
         token = request.cookies.get(self.security.cookie)
         session = await run_in_threadpool(self.security.session, token) if token else None
         scope.setdefault('state', {})['session'] = session
-        if session is None and (method, path) not in OPEN:
+        if session is None and not page_file and (method, path) not in OPEN:
             return await self._reject(scope, receive, send, 401, '尚未配對')
         length = headers.get('content-length')
         if length is not None and (not length.isascii() or not length.isdigit()):

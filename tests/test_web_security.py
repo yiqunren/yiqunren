@@ -97,7 +97,7 @@ class SecurityTest(unittest.TestCase):
                  ('PATCH', member_path, {'name': '改名'}), ('DELETE', member_path, None),
                  ('POST', '/api/turns', turn), ('GET', turn_path, None), ('GET', turn_path + '/events', None),
                  ('POST', turn_path + '/interrupt', None), ('GET', conversation_path, None),
-                 ('DELETE', conversation_path, None), ('GET', '/missing', None)]
+                 ('DELETE', conversation_path, None), ('GET', '/api/missing', None)]
         for cookie in (None, 'not-a-real-token'):
             client.cookies.clear()
             if cookie:
