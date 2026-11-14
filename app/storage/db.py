@@ -98,6 +98,10 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         # FR-1 單回合花費上限（美元）；NULL 表示不設上限。既有成員要不要補預設值由 on_upgrade 依登記處決定。
         'ALTER TABLE members ADD COLUMN max_budget_usd REAL',
     ),
+    (
+        # FR-2 完成的回合裡成員思考了幾秒；轉接器沒回報、或回合不是完成時是 NULL。
+        'ALTER TABLE turns ADD COLUMN thinking_seconds REAL',
+    ),
 )
 SCHEMA_VERSION = len(MIGRATIONS)
 

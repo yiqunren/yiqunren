@@ -402,7 +402,8 @@ class HttpThroughBridgeTest(BridgeEnvironment, unittest.TestCase):
         with self.app() as second:
             self.bridge.release()
             events = read_events(second, body['request_id'])
-            self.assertEqual(events[-1]['data'], {'state': 'completed', 'error_kind': None, 'reply': 'reply:hello'})
+            self.assertEqual(events[-1]['data'], {'state': 'completed', 'error_kind': None, 'reply': 'reply:hello',
+                                                 'thinking_seconds': None})
             wait_for(lambda: self.bridge.calls()[0]['acked'])
             self.assertEqual(self.bridge.calls()[0]['result'], None)
 
@@ -414,7 +415,8 @@ class HttpThroughBridgeTest(BridgeEnvironment, unittest.TestCase):
         with self.app() as client:
             client.post('/api/turns', json=body)
             events = read_events(client, body['request_id'])
-            self.assertEqual(events[-1]['data'], {'state': 'failed', 'error_kind': 'reply_too_long', 'reply': None})
+            self.assertEqual(events[-1]['data'], {'state': 'failed', 'error_kind': 'reply_too_long', 'reply': None,
+                                                 'thinking_seconds': None})
             wait_for(lambda: self.bridge.calls()[0]['acked'])  # 結果已寫進資料庫，橋接可以丟掉回覆
 
     def test_interrupt_through_bridge(self):

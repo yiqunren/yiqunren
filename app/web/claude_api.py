@@ -4,6 +4,8 @@
 - 前文：TurnInput.history（同一段對話先前完成的回合）依序帶給模型，再加上這次的訊息。
 - 花費上限（FR-1）：送出前用 count_tokens 取得輸入 token 數，依 PRICES 算出輸入花費（以快取寫入價計），
   再用剩下的預算換算這次最多能輸出的 token 數（含思考），當成 max_tokens。單回合因此不會超過上限。
+- 思考（FR-2）：支援 adaptive thinking 的模型一律開啟。串流時依內容區塊類型回報「思考中」「回答中」，
+  並把各思考區塊從開始到結束的時間加總，回合完成時和回覆一起存下。思考內容不要求回傳、也不存。
 - 失敗只記固定分類（classify）；錯誤訊息原文不存、不顯示，log 只記分類與請求 ID。
 - 中斷：取消進行中的請求，請求結束後丟 Interrupted。伺服器重啟時請求隨舊程序結束：
   這裡不呼叫 hooks.began，回合服務會把留下的回合標為未知。
@@ -14,6 +16,7 @@ import asyncio
 import logging
 import math
 import os
+import time
 
 import anthropic
 
@@ -49,6 +52,11 @@ PRICES = {
 }
 # Claude Haiku 5.5 的輸入超過 100K token 時改用較高的價格。
 TIERED = {'claude-haiku-5-5': (100_000, (0.50, 2.50))}
+# 價格表裡不支援 adaptive thinking 的模型；不在價格表裡的模型也不送思考設定（不知道支不支援）。
+NO_ADAPTIVE_THINKING = frozenset({'claude-haiku-4-5'})
+
+THINKING_BLOCKS = frozenset({'thinking', 'redacted_thinking'})
+THINKING, ANSWERING = 'thinking', 'answering'  # 進度裡的階段（FR-2）
 
 CREDIT_TOO_LOW = 'credit balance is too low'  # API 以 400 回報帳戶額度不足時的訊息（官方 CLI 也這樣判斷）
 
@@ -94,6 +102,31 @@ def classify(exc: Exception) -> str:
     return turns.INTERNAL_ERROR
 
 
+def adaptive_thinking(model: str) -> bool:
+    return model in PRICES and model not in NO_ADAPTIVE_THINKING
+
+
+async def follow(stream, progress, clock) -> tuple[object, float | None]:
+    """讀完串流：階段改變時回報進度，加總思考區塊的時間。回傳 (完整訊息, 思考秒數或 None)。"""
+    phase = None
+    opened: dict[int, float] = {}  # 進行中的思考區塊：區塊編號 → 開始時間
+    spent, thought = 0.0, False
+    async for event in stream:
+        if event.type == 'content_block_start':
+            kind = event.content_block.type
+            current = THINKING if kind in THINKING_BLOCKS else ANSWERING if kind == 'text' else None
+            if kind in THINKING_BLOCKS:
+                opened[event.index] = clock()
+            if current is not None and current != phase:
+                phase = current
+                progress({'kind': 'phase', 'phase': current})
+        elif event.type == 'content_block_stop' and event.index in opened:
+            spent += clock() - opened.pop(event.index)
+            thought = True
+    message = await stream.get_final_message()
+    return message, (round(max(spent, 0.0), 1) if thought else None)
+
+
 def messages_for(turn: TurnInput) -> list[dict]:
     found = []
     for message, reply in turn.history:
@@ -104,10 +137,11 @@ def messages_for(turn: TurnInput) -> list[dict]:
 
 
 class ClaudeApiRunner(Runner):
-    """client：anthropic.AsyncAnthropic（測試時換成假的）。"""
+    """client：anthropic.AsyncAnthropic（測試時換成假的）；clock 量思考時間用（測試時可換掉）。"""
 
-    def __init__(self, client):
+    def __init__(self, client, clock=time.monotonic):
         self.client = client
+        self.clock = clock
         self._tasks: dict[str, asyncio.Task] = {}
         self._stopping: set[str] = set()  # 擁有者要求中斷的回合（可能在 run 開始之前就送到）
 
@@ -115,7 +149,7 @@ class ClaudeApiRunner(Runner):
         if turn.turn_id in self._stopping:
             self._stopping.discard(turn.turn_id)
             raise Interrupted()  # 還沒送出任何請求
-        task = asyncio.create_task(self._reply(turn))
+        task = asyncio.create_task(self._reply(turn, hooks.progress))
         self._tasks[turn.turn_id] = task
         try:
             try:
@@ -131,11 +165,11 @@ class ClaudeApiRunner(Runner):
                 raise Failed(turns.TIMEOUT)
             if task.cancelled():
                 raise Interrupted()  # stop 取消了請求，請求已經結束
-            reply = task.result()  # Failed 或其他例外照原樣往外傳
+            reply, thinking_seconds = task.result()  # Failed 或其他例外照原樣往外傳
         finally:
             self._tasks.pop(turn.turn_id, None)
             self._stopping.discard(turn.turn_id)
-        hooks.save(reply)
+        hooks.save(reply, thinking_seconds=thinking_seconds)
 
     async def stop(self, turn_id: str) -> None:
         self._stopping.add(turn_id)
@@ -143,9 +177,11 @@ class ClaudeApiRunner(Runner):
         if task is not None:
             task.cancel()
 
-    async def _reply(self, turn: TurnInput) -> str:
+    async def _reply(self, turn: TurnInput, progress) -> tuple[str, float | None]:
         model = turn.model or DEFAULT_MODEL
         params: dict = {'model': model, 'messages': messages_for(turn), 'cache_control': {'type': 'ephemeral'}}
+        if adaptive_thinking(model):
+            params['thinking'] = {'type': 'adaptive'}
         if turn.effort:
             params['output_config'] = {'effort': turn.effort}
         limit, capped = MAX_OUTPUT, False
@@ -162,7 +198,7 @@ class ClaudeApiRunner(Runner):
                 if allowed < MAX_OUTPUT:
                     limit, capped = allowed, True
             async with self.client.messages.stream(max_tokens=limit, **params) as stream:
-                message = await stream.get_final_message()
+                message, thinking_seconds = await follow(stream, progress, self.clock)
         except anthropic.APIError as exc:
             kind = classify(exc)
             logger.warning('Claude API 回合 %s 失敗：%s（請求 ID：%s）', turn.turn_id, kind,
@@ -175,7 +211,7 @@ class ClaudeApiRunner(Runner):
         text = ''.join(block.text for block in message.content if block.type == 'text')
         if not text.strip():
             raise Failed(turns.INTERNAL_ERROR)
-        return text
+        return text, thinking_seconds
 
 
 def build() -> ClaudeApiRunner:

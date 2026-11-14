@@ -189,7 +189,7 @@ class TurnApiTest(unittest.TestCase):
         body = self.body()
         client.post('/api/turns', json=body)
         events = read_events(client, body['request_id'])
-        self.assertEqual(events[-1]['data'], {'state': 'failed', 'error_kind': 'internal_error', 'reply': None})
+        self.assertEqual(events[-1]['data'], {'state': 'failed', 'error_kind': 'internal_error', 'reply': None, 'thinking_seconds': None})
         everything = json.dumps(events) + client.get('/api/turns/' + body['request_id']).text
         self.assertNotIn('sensitive', everything)
 
@@ -219,7 +219,8 @@ class TurnApiTest(unittest.TestCase):
         client = self.client(runner=runner)
         events = read_events(client, body['request_id'])
         self.assertEqual([e['event'] for e in events], ['progress', 'progress', 'done'])
-        self.assertEqual(events[-1]['data'], {'state': 'completed', 'error_kind': None, 'reply': '接回後的回覆'})
+        self.assertEqual(events[-1]['data'], {'state': 'completed', 'error_kind': None, 'reply': '接回後的回覆',
+                                              'thinking_seconds': None})
         self.assertEqual(runner.resumed, [(body['request_id'], {'bridge_turn': 'b-' + body['request_id'],
                                                                 'epoch': 'e1'})])
         turn = client.get('/api/turns/' + body['request_id']).json()['turn']
@@ -373,7 +374,7 @@ class TurnApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 202)
         events = read_events(client, body['request_id'])
         self.assertEqual([e['event'] for e in events][-2:], ['stopping', 'done'])  # 送達後先告知「中斷中」
-        self.assertEqual(events[-1]['data'], {'state': 'interrupted', 'error_kind': None, 'reply': None})
+        self.assertEqual(events[-1]['data'], {'state': 'interrupted', 'error_kind': None, 'reply': None, 'thinking_seconds': None})
         self.assertEqual(client.get('/api/turns/' + body['request_id']).json()['turn']['state'], 'interrupted')
         again = client.post('/api/turns/%s/interrupt' % body['request_id'])
         self.assertEqual((again.status_code, again.json()['turn']['state']), (409, 'interrupted'))
@@ -405,7 +406,7 @@ class TurnApiTest(unittest.TestCase):
         client.post('/api/turns', json=body)
         events = read_events(client, body['request_id'])
         self.assertGreaterEqual(len(events), 2)  # 逾時前有進度
-        self.assertEqual(events[-1]['data'], {'state': 'failed', 'error_kind': 'timeout', 'reply': None})
+        self.assertEqual(events[-1]['data'], {'state': 'failed', 'error_kind': 'timeout', 'reply': None, 'thinking_seconds': None})
 
     def test_timeout_without_confirmed_stop_is_unknown(self):
         client = self.client(runner=FakeRunner(steps=200, tick=0.05, stop_confirmed=False), turn_timeout=0.3)
@@ -471,7 +472,7 @@ class TurnApiTest(unittest.TestCase):
                     self.assertEqual(turn['reply'], reply)
                 else:
                     # 明確告知、不截斷：沒有回覆，也沒有截斷後的內容。
-                    self.assertEqual(done, {'state': 'failed', 'error_kind': 'reply_too_long', 'reply': None})
+                    self.assertEqual(done, {'state': 'failed', 'error_kind': 'reply_too_long', 'reply': None, 'thinking_seconds': None})
                     self.assertEqual((turn['state'], turn['error_kind'], turn['reply']),
                                      ('failed', 'reply_too_long', None))
                     self.assertEqual([t['reply'] for t in listed], [None])
@@ -518,6 +519,31 @@ class TurnApiTest(unittest.TestCase):
                          (created['id'], 1800, 'grok', 'grok-4', 'high', 'subscription_cli'))
         row = client.get('/api/turns/' + body['request_id']).json()['turn']
         self.assertEqual((row['member_name'], row['adapter']), ('Grok 深度', 'grok'))
+
+    def test_thinking_phase_and_seconds_reach_the_api(self):
+        class ThinkingRunner(Runner):
+            async def run(self, turn, hooks):
+                hooks.progress({'kind': 'phase', 'phase': 'thinking'})
+                hooks.progress({'kind': 'phase', 'phase': 'answering'})
+                if turn.message == 'bad':
+                    hooks.save('x', thinking_seconds=-1)  # 不合格：丟例外，回合記為內部錯誤
+                hooks.save('答案', thinking_seconds=3.2)
+
+        client = self.client(runner=ThinkingRunner())
+        body = self.body()
+        client.post('/api/turns', json=body)
+        events = read_events(client, body['request_id'])
+        self.assertEqual([event['data'] for event in events if event['event'] == 'progress'],
+                         [{'kind': 'phase', 'phase': 'thinking'}, {'kind': 'phase', 'phase': 'answering'}])
+        self.assertEqual(events[-1]['data'], {'state': 'completed', 'error_kind': None, 'reply': '答案',
+                                              'thinking_seconds': 3.2})
+        self.assertEqual(client.get('/api/turns/' + body['request_id']).json()['turn']['thinking_seconds'], 3.2)
+        listed = client.get('/api/conversations/' + body['conversation_id']).json()
+        self.assertEqual([turn['thinking_seconds'] for turn in listed['turns']], [3.2])
+        bad = self.body(text='bad')
+        client.post('/api/turns', json=bad)
+        self.assertEqual(read_events(client, bad['request_id'])[-1]['data'],
+                         {'state': 'failed', 'error_kind': 'internal_error', 'reply': None, 'thinking_seconds': None})
 
     def test_session_continues_from_latest_completed_turn_and_workspace_is_per_conversation(self):
         class SessionRunner(Runner):

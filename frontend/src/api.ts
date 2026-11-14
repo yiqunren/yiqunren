@@ -68,6 +68,8 @@ export interface Turn {
   /** 失敗時的固定分類。 */
   error_kind: string | null
   reply: string | null
+  /** 完成的回合裡成員思考了幾秒（FR-2）；轉接器沒有回報時是 null。 */
+  thinking_seconds: number | null
   /** 伺服器時間，秒。 */
   started: number
   finished: number | null

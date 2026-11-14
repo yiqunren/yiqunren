@@ -67,6 +67,23 @@ class TurnStoreTest(unittest.TestCase):
                 turns.finish(self.connection, turn_id, state, 1.0, **kwargs)
         self.assertEqual(turns.get(self.connection, turn_id)['state'], 'running')
 
+    def test_thinking_seconds_only_for_completed_turns(self):
+        turn_id = self.start()
+        for state, kwargs in ((turns.FAILED, {'error_kind': turns.INTERNAL_ERROR}), (turns.INTERRUPTED, {}),
+                              (turns.UNKNOWN, {}), (turns.COMPLETED, {'reply': 'x', 'thinking_seconds': -0.1}),
+                              (turns.COMPLETED, {'reply': 'x', 'thinking_seconds': float('nan')}),
+                              (turns.COMPLETED, {'reply': 'x', 'thinking_seconds': True}),
+                              (turns.COMPLETED, {'reply': 'x', 'thinking_seconds': '3'})):
+            kwargs.setdefault('thinking_seconds', 1.0)
+            with self.subTest(state=state, kwargs=kwargs), self.assertRaises(ValueError):
+                turns.finish(self.connection, turn_id, state, 1.0, **kwargs)
+        self.assertEqual(turns.get(self.connection, turn_id)['state'], 'running')
+        self.assertTrue(turns.finish(self.connection, turn_id, turns.COMPLETED, 2.0, reply='x', thinking_seconds=2.5))
+        self.assertEqual(turns.get(self.connection, turn_id)['thinking_seconds'], 2.5)
+        plain = self.start()
+        self.assertTrue(turns.finish(self.connection, plain, turns.COMPLETED, 3.0, reply='y'))
+        self.assertIsNone(turns.get(self.connection, plain)['thinking_seconds'])
+
     def test_finished_turn_is_not_changed_again(self):
         turn_id = self.start()
         self.assertTrue(turns.finish(self.connection, turn_id, turns.FAILED, 1.0, error_kind=turns.INTERNAL_ERROR))

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 
 
@@ -195,21 +196,30 @@ def recorded_running(connection: sqlite3.Connection) -> list[tuple[str, str, str
         ' ORDER BY started, rowid', (RUNNING,))]
 
 
-def _finish_in_transaction(connection, turn_id, state, now, reply, error_kind, session=None) -> bool:
+def valid_thinking_seconds(value) -> bool:
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) and value >= 0)
+
+
+def _finish_in_transaction(connection, turn_id, state, now, reply, error_kind, session=None,
+                           thinking_seconds=None) -> bool:
     updated = connection.execute('UPDATE turns SET state = ?, reply = ?, error_kind = ?, finished = ?,'
-                                 ' provider_session = ? WHERE id = ? AND state = ?',
-                                 (state, reply, error_kind, now, session, turn_id, RUNNING)).rowcount
+                                 ' provider_session = ?, thinking_seconds = ? WHERE id = ? AND state = ?',
+                                 (state, reply, error_kind, now, session, thinking_seconds, turn_id,
+                                  RUNNING)).rowcount
     if updated:
         _append(connection, turn_id, DONE, {'state': state, 'error_kind': error_kind}, now)
     return bool(updated)
 
 
 def finish(connection: sqlite3.Connection, turn_id: str, state: str, now: float, *,
-           reply: str | None = None, error_kind: str | None = None, session: str | None = None) -> bool:
+           reply: str | None = None, error_kind: str | None = None, session: str | None = None,
+           thinking_seconds: float | None = None) -> bool:
     """把進行中的回合標為結束並寫入 done 事件；回合不是進行中時不動，回傳 False。
 
     session 是轉接器那一家的對話身分（例如 Claude Code 的 session ID），只有完成的回合才存，
-    同一段對話的下一個回合用它續接（NFR-7）。"""
+    同一段對話的下一個回合用它續接（NFR-7）。thinking_seconds 是成員思考了幾秒（FR-2），
+    同樣只有完成的回合才存。"""
     if state not in FINAL_STATES:
         raise ValueError('結束狀態無效')
     if (state == COMPLETED) != (reply is not None):
@@ -218,9 +228,12 @@ def finish(connection: sqlite3.Connection, turn_id: str, state: str, now: float,
         raise ValueError('失敗原因無效')
     if session is not None and (state != COMPLETED or not isinstance(session, str) or not session):
         raise ValueError('只有完成的回合有對話身分')
+    if thinking_seconds is not None and (state != COMPLETED or not valid_thinking_seconds(thinking_seconds)):
+        raise ValueError('只有完成的回合有思考時間，而且必須是 0 以上的數字')
     connection.execute('BEGIN IMMEDIATE')
     try:
-        done = _finish_in_transaction(connection, turn_id, state, now, reply, error_kind, session)
+        done = _finish_in_transaction(connection, turn_id, state, now, reply, error_kind, session,
+                                      thinking_seconds)
         connection.execute('COMMIT')
     except BaseException:
         connection.execute('ROLLBACK')

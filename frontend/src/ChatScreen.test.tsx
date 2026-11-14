@@ -425,6 +425,49 @@ describe('進行中的回合', () => {
   })
 })
 
+describe('思考中與思考時間', () => {
+  it('依轉接器回報的階段顯示思考中、回答中；看不懂的進度不影響', async () => {
+    const { finish } = fakeBackend({ members: [member()], turns: runningConversation() })
+    const sources = installEventSource()
+    open(`#/chat/${C1}`)
+    await attached()
+    expect(screen.getByRole('status').textContent).toMatch(/^執行中… 已經過 1:0[5-9]$/)
+    act(() => sources[0].emit('progress', { kind: 'item', event: 'started', item_type: 'Edit' }))
+    act(() => sources[0].emit('progress', { kind: 'phase', phase: 'dreaming' }))
+    act(() => sources[0].emit('progress', undefined, '不是 JSON'))
+    expect(screen.getByRole('status').textContent).toMatch(/^執行中… /)
+    act(() => sources[0].emit('progress', { kind: 'phase', phase: 'thinking' }))
+    expect(screen.getByRole('status').textContent).toMatch(/^思考中… 已經過 1:0[5-9]$/)
+    act(() => sources[0].emit('progress', { kind: 'phase', phase: 'answering' }))
+    expect(screen.getByRole('status').textContent).toMatch(/^回答中… 已經過 1:0[5-9]$/)
+    act(() => sources[0].emit('stopping'))
+    expect(screen.getByRole('status').textContent).toMatch(/^中斷中，等成員的程序停止… /)
+
+    finish(T2, { state: 'completed', reply: '想好了', thinking_seconds: 7.6 })
+    act(() => sources[0].emit('done', { state: 'completed', error_kind: null, reply: '想好了', thinking_seconds: 7.6 }))
+    expect(screen.getByText('想好了')).toBeTruthy()
+    expect(screen.getByText('思考了 8 秒')).toBeTruthy()
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('完成的回合顯示思考了幾秒；沒有思考時間或沒有完成時不顯示', async () => {
+    fakeBackend({
+      members: [member()],
+      turns: [
+        turn({ id: 'h1', message: '甲', reply: '答甲', thinking_seconds: 12.4, started: 1000 }),
+        turn({ id: 'h2', message: '乙', reply: '答乙', thinking_seconds: 0.4, started: 1100 }),
+        turn({ id: 'h3', message: '丙', reply: '答丙', thinking_seconds: null, started: 1200 }),
+        turn({ id: 'h4', message: '丁', state: 'failed', error_kind: 'timeout', reply: null, thinking_seconds: 3, started: 1300 }),
+      ],
+    })
+    open(`#/chat/${C1}`)
+    await screen.findByText('答丙')
+    expect(screen.getByText('思考了 12 秒')).toBeTruthy()
+    expect(screen.getByText('思考了不到 1 秒')).toBeTruthy()
+    expect(document.querySelectorAll('.chat-main .thinking')).toHaveLength(2)
+  })
+})
+
 describe('回合結果', () => {
   it('失敗只顯示固定分類；訊息照原樣當純文字，回覆裡的 HTML 不會變成元素', async () => {
     fakeBackend({

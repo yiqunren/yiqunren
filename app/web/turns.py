@@ -57,6 +57,7 @@ def snapshot(row) -> dict:
         'state': row['state'],
         'error_kind': row['error_kind'],
         'reply': row['reply'],
+        'thinking_seconds': row['thinking_seconds'],  # FR-2：完成的回合裡成員思考了幾秒；沒有回報時是 null
         'started': row['started'],
         'finished': row['finished'],
     }
@@ -293,19 +294,22 @@ class TurnService:
                 connection.close()
             self._bump(turn_id)
 
-        def save(reply: str, session: str | None = None) -> None:
+        def save(reply: str, session: str | None = None, thinking_seconds: float | None = None) -> None:
             nonlocal settled
             if not isinstance(reply, str):
                 raise TypeError('回覆必須是文字')
             if session is not None and (not isinstance(session, str) or not session):
                 raise TypeError('對話身分必須是文字')
+            if thinking_seconds is not None and not turns.valid_thinking_seconds(thinking_seconds):
+                raise TypeError('思考時間必須是 0 以上的數字')
             size = len(reply.encode('utf-8'))
             if size > MAX_REPLY_BYTES:
                 # FR-2：明確告知、不截斷，回覆一個字都不存。照常返回，轉接器可以讓遠端丟掉回覆。
                 logger.warning('回合 %s 失敗：回覆過長（%d 位元組）', turn_id, size)
                 result = {'state': turns.FAILED, 'error_kind': turns.REPLY_TOO_LONG}
             else:
-                result = {'state': turns.COMPLETED, 'reply': reply, 'session': session}
+                result = {'state': turns.COMPLETED, 'reply': reply, 'session': session,
+                          'thinking_seconds': thinking_seconds}
             if not self._finish(turn_id, **result):
                 # 沒寫進去就不能讓轉接器通知遠端丟掉回覆。
                 raise RuntimeError('回合已不在進行中，結果沒有存下')
@@ -410,7 +414,8 @@ async def turn_events(turn_id: str, row: Annotated[object, Depends(_existing_tur
         pending = service.events_after(turn_id, after)
         for seq, kind, data in pending:
             if kind == turns.DONE:
-                data = {**data, 'reply': service.get(turn_id)['reply']}
+                finished = service.get(turn_id)
+                data = {**data, 'reply': finished['reply'], 'thinking_seconds': finished['thinking_seconds']}
             yield ServerSentEvent(id=str(seq), event=kind, data=data)
             after = seq
             if kind == turns.DONE:

@@ -56,6 +56,7 @@ export function turn(overrides: Partial<Turn> = {}): Turn {
     state: 'completed',
     error_kind: null,
     reply: '你好，我在。',
+    thinking_seconds: null,
     started: 1000,
     finished: 1005,
     ...overrides,

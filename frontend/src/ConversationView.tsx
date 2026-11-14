@@ -3,7 +3,7 @@ import { type FormEvent, type KeyboardEvent, useCallback, useEffect, useRef, use
 
 import * as api from './api'
 import { Markdown } from './Markdown'
-import { watchTurn } from './turn-events'
+import { type TurnPhase, watchTurn } from './turn-events'
 
 // 失敗的固定分類（後端只會給這幾種）；不顯示原始錯誤全文。
 const ERROR_LABELS: Record<string, string> = {
@@ -16,6 +16,17 @@ const ERROR_LABELS: Record<string, string> = {
   timeout: '逾時（超過這位成員的單回合時間上限）',
   reply_too_long: '回覆過長（超過長度上限，回覆沒有保存）',
   internal_error: '內部錯誤',
+}
+
+// FR-2：轉接器回報階段時顯示「思考中」「回答中」，沒回報時是「執行中」。
+const PHASE_LABELS: Record<TurnPhase | 'running', string> = {
+  running: '執行中…',
+  thinking: '思考中…',
+  answering: '回答中…',
+}
+
+function thinkingLabel(seconds: number): string {
+  return seconds < 1 ? '思考了不到 1 秒' : `思考了 ${Math.round(seconds)} 秒`
 }
 
 function upsert(turns: api.Turn[], turn: api.Turn): api.Turn[] {
@@ -63,6 +74,8 @@ export function ConversationView({ conversationId, fresh, members, onChanged, on
   const [deleting, setDeleting] = useState(false)
   // 中斷要求已送達的回合。
   const [stopping, setStopping] = useState<string | null>(null)
+  // 進行中回合最近回報的階段（FR-2）；事件每次連線都從頭重送，重新整理後接得回來。
+  const [phase, setPhase] = useState<{ turn: string; phase: TurnPhase } | null>(null)
   const [reconnecting, setReconnecting] = useState(false)
   // 送出中的請求：同樣內容重送沿用同一個請求 ID（NFR-1），內容改了才換新的。
   const pending = useRef<{ key: string; id: string } | null>(null)
@@ -144,6 +157,7 @@ export function ConversationView({ conversationId, fresh, members, onChanged, on
           attempt = 0
           setReconnecting(false)
         },
+        onPhase: (next) => setPhase({ turn: runningId, phase: next }),
         onStopping: () => setStopping(runningId),
         onDone: (done) => {
           setTurns((current) =>
@@ -331,13 +345,19 @@ export function ConversationView({ conversationId, fresh, members, onChanged, on
             {turn.state === 'running' && (
               <div className="running">
                 <p role="status">
-                  {stopping === turn.id ? '中斷中，等成員的程序停止…' : '執行中…'} 已經過 <Elapsed since={turn.started} />
+                  {stopping === turn.id
+                    ? '中斷中，等成員的程序停止…'
+                    : PHASE_LABELS[phase?.turn === turn.id ? phase.phase : 'running']}{' '}
+                  已經過 <Elapsed since={turn.started} />
                 </p>
                 {reconnecting && <p className="hint">和伺服器的連線中斷，重新連線中…</p>}
                 <button type="button" onClick={() => void interrupt(turn)} disabled={interrupting || stopping === turn.id}>
                   中斷
                 </button>
               </div>
+            )}
+            {turn.state === 'completed' && typeof turn.thinking_seconds === 'number' && (
+              <p className="hint thinking">{thinkingLabel(turn.thinking_seconds)}</p>
             )}
             {turn.state === 'completed' && <Markdown text={turn.reply ?? ''} />}
             {turn.state === 'failed' && (

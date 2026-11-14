@@ -30,9 +30,20 @@ def reply(text='你好', stop_reason='end_turn'):
     return SimpleNamespace(content=blocks, stop_reason=stop_reason)
 
 
+def block_events(message):
+    """依訊息的內容區塊產生串流事件：每個區塊一個開始、一個結束。"""
+    events = []
+    for index, block in enumerate(message.content):
+        events.append(SimpleNamespace(type='content_block_start', index=index,
+                                      content_block=SimpleNamespace(type=block.type)))
+        events.append(SimpleNamespace(type='content_block_stop', index=index))
+    return events
+
+
 class FakeStream:
     def __init__(self, messages):
         self.messages = messages
+        self.read_all = False
 
     async def __aenter__(self):
         return self
@@ -40,7 +51,7 @@ class FakeStream:
     async def __aexit__(self, *exc):
         return False
 
-    async def get_final_message(self):
+    async def __aiter__(self):
         self.messages.started.set()
         try:
             await asyncio.sleep(self.messages.delay)
@@ -49,12 +60,20 @@ class FakeStream:
             raise
         if self.messages.error is not None:
             raise self.messages.error
+        events = self.messages.events if self.messages.events is not None else block_events(self.messages.message)
+        for event in events:
+            yield event
+        self.read_all = True
+
+    async def get_final_message(self):
+        assert self.read_all, '要先讀完串流'
         return self.messages.message
 
 
 class FakeMessages:
-    def __init__(self, *, message=None, input_tokens=0, error=None, count_error=None, delay=0.0):
+    def __init__(self, *, message=None, input_tokens=0, error=None, count_error=None, delay=0.0, events=None):
         self.message = message if message is not None else reply()
+        self.events = events
         self.input_tokens, self.error, self.count_error, self.delay = input_tokens, error, count_error, delay
         self.counted, self.streamed, self.cancelled = [], [], False
         self.started = asyncio.Event()
@@ -78,14 +97,21 @@ def turn_input(**changes):
 
 class Recorder:
     def __init__(self):
-        self.saved, self.began = [], []
-        self.hooks = Hooks(began=self.began.append, progress=lambda item: None,
-                           save=lambda text, session=None: self.saved.append((text, session)))
+        self.saved, self.began, self.progress = [], [], []
+        self.hooks = Hooks(began=self.began.append, progress=self.progress.append,
+                           save=lambda text, session=None, thinking_seconds=None:
+                           self.saved.append((text, session, thinking_seconds)))
+
+
+def ticking(*times):
+    """假的時鐘：每呼叫一次回傳下一個時間。"""
+    values = iter(times)
+    return lambda: next(values)
 
 
 class RunnerTest(unittest.IsolatedAsyncioTestCase):
-    async def run_turn(self, messages, **changes):
-        runner = claude_api.ClaudeApiRunner(SimpleNamespace(messages=messages))
+    async def run_turn(self, messages, clock=None, **changes):
+        runner = claude_api.ClaudeApiRunner(SimpleNamespace(messages=messages), **({'clock': clock} if clock else {}))
         recorder = Recorder()
         await runner.run(turn_input(**changes), recorder.hooks)
         return recorder
@@ -97,11 +123,15 @@ class RunnerTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_reply_is_saved_with_history_default_model_and_no_tools(self):
         messages = FakeMessages(message=reply('答案'))
-        recorder = await self.run_turn(messages, history=(('第一題', '第一答'),))
-        self.assertEqual(recorder.saved, [('答案', None)])  # 只存文字，不存思考；沒有對話身分
+        recorder = await self.run_turn(messages, clock=ticking(10.0, 12.5), history=(('第一題', '第一答'),))
+        # 只存文字，不存思考內容；沒有對話身分；思考區塊從 10.0 秒開始、12.5 秒結束。
+        self.assertEqual(recorder.saved, [('答案', None, 2.5)])
+        self.assertEqual(recorder.progress, [{'kind': 'phase', 'phase': 'thinking'},
+                                             {'kind': 'phase', 'phase': 'answering'}])
         self.assertEqual(recorder.began, [])  # 不呼叫 began：重啟後回合標為未知
         [params] = messages.streamed
         self.assertEqual(params['model'], 'claude-opus-5-5')
+        self.assertEqual(params['thinking'], {'type': 'adaptive'})  # 一律開啟；不要求回傳思考內容
         self.assertEqual(params['messages'], [{'role': 'user', 'content': '第一題'},
                                               {'role': 'assistant', 'content': '第一答'},
                                               {'role': 'user', 'content': '這次的問題'}])
@@ -110,6 +140,36 @@ class RunnerTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('tools', params)
         self.assertNotIn('output_config', params)  # 沒設推理強度就用模型預設
         self.assertEqual(messages.counted, [])  # 沒設花費上限就不必計數
+
+    async def test_thinking_only_for_models_that_support_adaptive_thinking(self):
+        for model, expected in (('claude-sonnet-5-5', {'type': 'adaptive'}), ('claude-haiku-5-5', {'type': 'adaptive'}),
+                                ('claude-haiku-4-5', None), ('claude-unknown', None)):
+            with self.subTest(model=model):
+                messages = FakeMessages(message=reply('好', stop_reason='end_turn'))
+                await self.run_turn(messages, clock=ticking(0.0, 1.0), model=model)
+                self.assertEqual(messages.streamed[0].get('thinking'), expected)
+
+    async def test_no_thinking_block_means_no_thinking_time(self):
+        messages = FakeMessages(message=SimpleNamespace(content=[SimpleNamespace(type='text', text='直接答')],
+                                                        stop_reason='end_turn'))
+        recorder = await self.run_turn(messages)
+        self.assertEqual(recorder.saved, [('直接答', None, None)])
+        self.assertEqual(recorder.progress, [{'kind': 'phase', 'phase': 'answering'}])
+
+    async def test_thinking_time_adds_up_blocks_and_phase_is_reported_on_change_only(self):
+        def start(index, kind):
+            return SimpleNamespace(type='content_block_start', index=index, content_block=SimpleNamespace(type=kind))
+
+        def stop(index):
+            return SimpleNamespace(type='content_block_stop', index=index)
+
+        events = [start(0, 'thinking'), stop(0), start(1, 'redacted_thinking'), stop(1),
+                  start(2, 'text'), stop(2), start(3, 'thinking'), stop(3), start(4, 'text'), stop(4)]
+        messages = FakeMessages(message=reply('答'), events=events)
+        recorder = await self.run_turn(messages, clock=ticking(0.0, 1.0, 1.0, 1.25, 5.0, 5.5))
+        self.assertEqual(recorder.saved, [('答', None, 1.8)])  # 1.0 + 0.25 + 0.5，取到小數一位
+        self.assertEqual([item['phase'] for item in recorder.progress],
+                         ['thinking', 'answering', 'thinking', 'answering'])
 
     async def test_model_and_effort_come_from_member_settings(self):
         messages = FakeMessages()

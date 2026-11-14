@@ -32,8 +32,11 @@ hooks：
   只放接回所需的身分，不放訊息、回覆或憑證。可以在其他執行緒呼叫（只寫資料庫）；
   失敗時會丟例外，執行者應要求遠端停止這一回合並丟 Unknown。
 - progress(item)：送出進度，只放可以公開的資訊。必須在事件迴圈的執行緒呼叫。
-- save(reply, session=None)：見上。必須在事件迴圈的執行緒呼叫。session 是該家的對話身分（可省略），
-  只在回合完成時存下，同一段對話的下一個回合從 TurnInput.session 取回。
+  能分辨成員正在思考還是回答的轉接器送 {'kind': 'phase', 'phase': 'thinking' 或 'answering'}（FR-2），
+  介面依此顯示「思考中」「回答中」；其他內容介面不解讀。
+- save(reply, session=None, thinking_seconds=None)：見上。必須在事件迴圈的執行緒呼叫。session 是該家的
+  對話身分（可省略），只在回合完成時存下，同一段對話的下一個回合從 TurnInput.session 取回。
+  thinking_seconds 是成員思考了幾秒（0 以上的數字，可省略，FR-2），和回覆一起存下。
 
 resume：用 began 存下的 record 接回上次執行中的回合，結果照 run 的方式回報。
 不支援接回的執行者不必實作（預設丟 NotImplementedError，回合標為未知）。
@@ -70,7 +73,8 @@ class TurnInput:
 class Hooks:
     began: Callable[[dict], None]
     progress: Callable[[dict], None]
-    # save(reply, session=None)：session 是轉接器那一家的對話身分，下一個回合以 TurnInput.session 帶回（NFR-7）。
+    # save(reply, session=None, thinking_seconds=None)：session 是轉接器那一家的對話身分，下一個回合以
+    # TurnInput.session 帶回（NFR-7）；thinking_seconds 是成員思考了幾秒（FR-2）。
     save: Callable[..., None]
 
 
