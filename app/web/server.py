@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import time
 
 from fastapi import FastAPI
 
 from app.storage import db
-from app.web import config, members, turns
+from app.web import config, members, security, turns
 from app.web.fake_runner import FakeRunner
 
 
@@ -15,10 +16,11 @@ TELEMETRY_OFF = {'auto_configure': False, 'tracing': False, 'metrics': False, 'l
 
 
 def create_app(settings: config.Settings | None = None, *, runner=None,
-               turn_timeout: float | None = None) -> FastAPI:
+               turn_timeout: float | None = None, clock=time.time) -> FastAPI:
     """runner：私聊回合的執行者（單一執行者或 {轉接器代號: 執行者}，測試注入用）；
     沒給時，只有設定 fake_turns 才用假轉接器（所有轉接器共用）。
-    turn_timeout：只供測試縮短單回合逾時；None 表示用各成員的設定（FR-1）。"""
+    turn_timeout：只供測試縮短單回合逾時；None 表示用各成員的設定（FR-1）。
+    clock：只供測試控制配對碼與 Cookie 的期限、頻率限制的視窗（NFR-3）。"""
     settings = settings or config.load()
     if runner is None and settings.fake_turns:
         runner = FakeRunner()
@@ -37,6 +39,9 @@ def create_app(settings: config.Settings | None = None, *, runner=None,
     app = FastAPI(title='Yiqunren', telemetry=TELEMETRY_OFF, lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
+    # NFR-3：所有請求先經過 Host、CSRF、配對、大小與頻率檢查。
+    app.state.security = security.Security(settings.port, lambda: app.state.db_path, clock)
+    app.add_middleware(security.Guard, security=app.state.security)
 
     @app.get('/api/health')
     def health():
@@ -47,6 +52,7 @@ def create_app(settings: config.Settings | None = None, *, runner=None,
             connection.close()
         return {'status': 'ok', 'schema_version': version}
 
+    app.include_router(security.router)
     app.include_router(members.router)
     app.include_router(turns.router)
     return app

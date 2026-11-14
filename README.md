@@ -57,9 +57,35 @@ uv sync
 .venv/bin/python -m app.web
 ```
 
+第一次使用要先配對：另開一個終端執行下面的指令取得一次性配對碼，再用 `POST /api/pair` 送出，換到 Cookie。配對碼 10 分鐘內有效、只能用一次。伺服器有沒有在跑都可以產生配對碼，伺服器自己的輸出也不會出現配對碼。
+
+```bash
+.venv/bin/python -m app.web pair     # 產生配對碼；再產生一組，舊的就作廢
+.venv/bin/python -m app.web unpair   # 撤銷所有已配對的瀏覽器
+```
+
+還沒有網頁介面，可以先用 curl 試（`-c`、`-b` 讀寫 Cookie 檔；這個檔等於登入憑證，用完要刪掉）：
+
+```bash
+curl -c cookies.txt -H 'X-Yiqunren-CSRF: 1' -H 'Content-Type: application/json' \
+     -d '{"code": "ABCD-EFGH"}' http://127.0.0.1:8420/api/pair
+curl -b cookies.txt http://127.0.0.1:8420/api/members
+```
+
+所有請求都要通過以下安全檢查：
+
+- 只接受用 IP 位址或 `localhost` 加上設定的埠連線；用其他主機名稱連線回 400。
+- 除了 `GET /api/health`、`POST /api/pair`、`GET /api/session`、`DELETE /api/session`，都要先配對，讀取與 SSE 也一樣，否則回 401。Cookie 連續 30 天沒使用就失效。
+- GET、HEAD 以外的請求要帶 `X-Yiqunren-CSRF: 1` 標頭；帶了 `Origin` 或 `Sec-Fetch-Site` 時必須是同源，否則回 403。
+- 請求本體上限 512 KiB，超過回 413。
+- 改變狀態的請求合計每分鐘最多 60 次，其中送出回合每分鐘最多 20 次；超過回 429，`Retry-After` 標頭告知幾秒後可以再試。
+
 目前的 API：
 
 - `GET /api/health`：健康檢查。
+- `POST /api/pair`：用配對碼換 Cookie，內容是 JSON：`code`（大小寫、連字號都可以）。配對碼不對或已失效回 403；輸錯 5 次就作廢，要重新產生。
+- `GET /api/session`：查這個瀏覽器是否已配對，回傳 `{"paired": true}` 或 `false`。
+- `DELETE /api/session`：登出這個瀏覽器，只撤銷它自己，其他已配對的瀏覽器不受影響。
 - `POST /api/members`：新增一位成員（你設定的一位 AI 參與者），內容是 JSON：`request_id`（前端產生的 UUID，也是之後的成員 ID）、`adapter`（轉接器代號，例如 `codex`）、`name`、`auth_mode`（`api_key` 或 `subscription_cli`，要是該轉接器支援的），可選 `model`（空白表示用該家預設）、`effort`（推理強度，該轉接器支援時才能設）、`timeout_minutes`（單回合逾時，1～60 分鐘，預設 15）。同一個 `request_id` 重送回傳原本的成員。選訂閱 CLI 模式時，回傳的 `terms_notice` 會帶服務條款提示。模型目前只存文字，還不比對各家的模型清單。
 - `GET /api/members`、`GET /api/members/{id}`：列出成員或查一位，含狀態 `status`：`running`（有進行中回合）、`needs_review`（最近一個回合是「未知」，需要你核對）、`idle`。
 - `PATCH /api/members/{id}`：只送要改的欄位：`name`、`model`、`effort`（送 `null` 清除）、`auth_mode`、`timeout_minutes`、`enabled`（`false` 是停用：設定保留、不能送新回合，已經在跑的回合不受影響）。轉接器不能改，要換就新增另一位成員。

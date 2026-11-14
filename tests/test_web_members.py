@@ -5,8 +5,6 @@ import tempfile
 import unittest
 import uuid
 
-from fastapi.testclient import TestClient
-
 from app.services import adapters
 from app.web.config import Settings
 from app.web.fake_runner import FakeRunner
@@ -14,6 +12,7 @@ from app.web.members import TERMS_NOTICE
 from app.web.runner import Runner, Unknown
 from app.web.server import create_app
 from test_web_turns import read_events, read_events_until
+from web_client import PairedClient
 
 
 class BlockUntilStopped(Runner):
@@ -37,7 +36,7 @@ class MemberApiTest(unittest.TestCase):
         self.settings = Settings(host='127.0.0.1', port=8420, state_dir=Path(self.temporary.name) / 'state')
 
     def client(self, runner=None):
-        client = TestClient(create_app(self.settings, runner=runner or FakeRunner(steps=1, tick=0.01)))
+        client = PairedClient(create_app(self.settings, runner=runner or FakeRunner(steps=1, tick=0.01)))
         client.__enter__()
         self.addCleanup(client.__exit__, None, None, None)
         return client

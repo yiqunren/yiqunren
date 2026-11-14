@@ -6,14 +6,13 @@ import tempfile
 import unittest
 import uuid
 
-from fastapi.testclient import TestClient
-
 from app.storage import db, members, requests
 from app.web.config import Settings
 from app.web.fake_runner import FakeRunner
 from app.web.runner import Failed, Interrupted, Runner, Unknown
 from app.web.server import create_app
 from app.web.turns import MAX_MESSAGE_CHARS, MAX_REPLY_BYTES
+from web_client import PairedClient
 
 
 def add_member(state_dir, *, adapter='codex', name='成員一', auth_mode='api_key', timeout=900, enabled=True):
@@ -121,7 +120,7 @@ class TurnApiTest(unittest.TestCase):
         self.member = add_member(self.settings.state_dir)
 
     def client(self, runner=None, settings=None, **options):
-        client = TestClient(create_app(settings or self.settings,
+        client = PairedClient(create_app(settings or self.settings,
                                        runner=runner if runner is not None else FakeRunner(steps=3, tick=0.02),
                                        **options))
         client.__enter__()
@@ -196,7 +195,7 @@ class TurnApiTest(unittest.TestCase):
 
     def test_server_restart_marks_running_turn_unknown(self):
         body = self.body()
-        first = TestClient(create_app(self.settings, runner=BlockingRunner()))
+        first = PairedClient(create_app(self.settings, runner=BlockingRunner()))
         with first:
             self.assertEqual(first.post('/api/turns', json=body).status_code, 202)
             self.assertEqual(read_events_until(first, body['request_id'], 1)[0]['event'], 'progress')
@@ -209,7 +208,7 @@ class TurnApiTest(unittest.TestCase):
     def start_recorded_turn_and_shut_down(self):
         """第一次啟動：回合存下轉接器身分後伺服器關閉，回合留在進行中。"""
         body = self.body()
-        with TestClient(create_app(self.settings, runner=RecordingRunner())) as first:
+        with PairedClient(create_app(self.settings, runner=RecordingRunner())) as first:
             self.assertEqual(first.post('/api/turns', json=body).status_code, 202)
             self.assertEqual(read_events_until(first, body['request_id'], 1)[0]['event'], 'progress')
         return body
@@ -234,7 +233,7 @@ class TurnApiTest(unittest.TestCase):
             with self.subTest(resume_with=type(resume_with).__name__):
                 body = self.start_recorded_turn_and_shut_down()
                 runner = RecordingRunner(resume_with=resume_with)
-                with TestClient(create_app(self.settings, runner=runner)) as client:
+                with PairedClient(create_app(self.settings, runner=runner)) as client:
                     self.assertEqual(read_events(client, body['request_id'])[-1]['data']['state'], state)
                 self.assertEqual(len(runner.resumed), 1)
 
@@ -242,7 +241,7 @@ class TurnApiTest(unittest.TestCase):
         for runner in (None, FakeRunner(steps=1, tick=0.01)):
             with self.subTest(runner=type(runner).__name__):
                 body = self.start_recorded_turn_and_shut_down()
-                with TestClient(create_app(self.settings, runner=runner)) as client:
+                with PairedClient(create_app(self.settings, runner=runner)) as client:
                     self.assertEqual(read_events(client, body['request_id'])[-1]['data']['state'], 'unknown')
 
     def test_restart_with_unreadable_record_is_unknown(self):
@@ -255,13 +254,13 @@ class TurnApiTest(unittest.TestCase):
                 finally:
                     connection.close()
                 runner = RecordingRunner(resume_with='不該被呼叫')
-                with TestClient(create_app(self.settings, runner=runner)) as client:
+                with PairedClient(create_app(self.settings, runner=runner)) as client:
                     self.assertEqual(read_events(client, body['request_id'])[-1]['data']['state'], 'unknown')
                 self.assertEqual(runner.resumed, [])
 
     def test_conversation_shows_messages_and_replies_after_restart(self):
         body = self.body(text='第一個問題')
-        with TestClient(create_app(self.settings, runner=FakeRunner(steps=1, tick=0.01))) as first:
+        with PairedClient(create_app(self.settings, runner=FakeRunner(steps=1, tick=0.01))) as first:
             first.post('/api/turns', json=body)
             read_events(first, body['request_id'])
             second = self.body(conversation_id=body['conversation_id'], text='第二個問題')
@@ -422,14 +421,14 @@ class TurnApiTest(unittest.TestCase):
         self.assertEqual(client.get('/api/turns/' + body['request_id']).json()['turn']['state'], 'running')
 
     def test_without_runner_turns_are_refused_and_nothing_is_stored(self):
-        client = TestClient(create_app(self.settings))
+        client = PairedClient(create_app(self.settings))
         with client:
             body = self.body()
             self.assertEqual(client.post('/api/turns', json=body).status_code, 503)
             self.assertEqual(client.get('/api/turns/' + body['request_id']).status_code, 404)
 
     def test_fake_turns_setting_enables_fake_runner(self):
-        client = TestClient(create_app(Settings('127.0.0.1', 8420, self.settings.state_dir, fake_turns=True)))
+        client = PairedClient(create_app(Settings('127.0.0.1', 8420, self.settings.state_dir, fake_turns=True)))
         with client:
             self.assertEqual(client.post('/api/turns', json=self.body()).status_code, 202)
 

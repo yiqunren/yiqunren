@@ -8,11 +8,10 @@ import tempfile
 import threading
 import unittest
 
-from fastapi.testclient import TestClient
-
 from app.storage import db
 from app.web.config import Settings
 from app.web.server import create_app
+from web_client import PairedClient
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,14 +25,14 @@ class ServerTest(unittest.TestCase):
         self.settings = Settings(host='127.0.0.1', port=8420, state_dir=self.state)
 
     def test_health_reports_schema_version_and_creates_database(self):
-        with TestClient(create_app(self.settings)) as client:
-            response = client.get('/api/health')
+        with PairedClient(create_app(self.settings), pair=False) as client:
+            response = client.get('/api/health')  # 健康檢查不必配對（NFR-3）
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {'status': 'ok', 'schema_version': db.SCHEMA_VERSION})
         self.assertTrue((self.state / db.DB_NAME).is_file())
 
     def test_interactive_docs_are_disabled(self):
-        with TestClient(create_app(self.settings)) as client:
+        with PairedClient(create_app(self.settings)) as client:
             for path in ('/docs', '/redoc', '/openapi.json'):
                 with self.subTest(path=path):
                     self.assertEqual(client.get(path).status_code, 404)
@@ -42,7 +41,7 @@ class ServerTest(unittest.TestCase):
         self.state.mkdir(mode=0o755)
         os.chmod(self.state, 0o755)
         with self.assertRaises(db.StorageError):
-            with TestClient(create_app(self.settings)):
+            with PairedClient(create_app(self.settings)):
                 pass
 
 
@@ -65,7 +64,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from app.web.config import Settings
 from app.web.server import create_app
-with TestClient(create_app(Settings('127.0.0.1', 8420, Path(sys.argv[1])))) as client:
+app = create_app(Settings('127.0.0.1', 8420, Path(sys.argv[1])))
+with TestClient(app, base_url='http://127.0.0.1:8420') as client:
     for _ in range(10):
         assert client.get('/api/health').status_code == 200
         client.get('/missing')

@@ -76,6 +76,20 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         'ALTER TABLE turns ADD COLUMN adapter TEXT',
         'CREATE INDEX turns_member ON turns(member, started)',
     ),
+    (
+        # NFR-3 配對：同時只有一組有效的配對碼（只存雜湊）；已配對的瀏覽器只存憑證的雜湊。
+        'CREATE TABLE pairing_code ('
+        ' id INTEGER PRIMARY KEY CHECK (id = 1),'
+        ' code_hash TEXT NOT NULL,'
+        ' expires REAL NOT NULL,'
+        ' failures INTEGER NOT NULL'
+        ')',
+        'CREATE TABLE browser_sessions ('
+        ' token_hash TEXT PRIMARY KEY,'
+        ' created REAL NOT NULL,'
+        ' last_used REAL NOT NULL'
+        ')',
+    ),
 )
 SCHEMA_VERSION = len(MIGRATIONS)
 

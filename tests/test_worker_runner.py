@@ -16,8 +16,6 @@ import unittest
 from unittest import mock
 import uuid
 
-from fastapi.testclient import TestClient
-
 from app.services import adapters, worker_turn
 from app.web.config import Settings
 from app.web.runner import Hooks, Interrupted, TurnInput, Unknown
@@ -25,6 +23,7 @@ from app.web.server import create_app
 from app.web.worker_runner import WorkerTurnRunner
 from scripts import private_cli, turn_host
 from test_web_turns import add_member, read_events, read_events_until
+from web_client import PairedClient
 
 
 PROGRESS = {'kind': 'item', 'event': 'completed', 'item_type': 'step', 'completed': 1}
@@ -386,7 +385,7 @@ class HttpThroughBridgeTest(BridgeEnvironment, unittest.TestCase):
 
     def app(self):
         # 依成員的轉接器選執行者（FR-1）：testbot 的成員交給接到橋接的 WorkerTurnRunner。
-        return TestClient(create_app(self.settings, runner={'testbot': new_runner()}))
+        return PairedClient(create_app(self.settings, runner={'testbot': new_runner()}))
 
     def body(self):
         return {'request_id': str(uuid.uuid4()), 'conversation_id': str(uuid.uuid4()), 'member': self.member,
