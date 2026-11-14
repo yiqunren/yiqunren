@@ -287,6 +287,88 @@ class RunnerTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(messages.cancelled)
 
 
+def cached_reply(text='答', written=0, read=0):
+    """帶 API 用量的回覆：written／read 是這次請求寫入／讀取快取的 token 數。"""
+    message = reply(text)
+    message.usage = SimpleNamespace(input_tokens=10, cache_creation_input_tokens=written, cache_read_input_tokens=read)
+    return message
+
+
+class SettableClock:
+    def __init__(self, now=1000.0):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+
+class CacheEstimateTest(unittest.IsolatedAsyncioTestCase):
+    """SPEC NFR-7：上一個完成回合 4 分鐘內、設定沒變時，假設前文命中快取估算；最壞情況不超過上限 2 倍。"""
+
+    def setUp(self):
+        self.clock = SettableClock()
+        self.conversation = str(uuid.uuid4())
+        self.history = (('第一題', '第一答'),)
+
+    def runner(self, messages):
+        return claude_api.ClaudeApiRunner(SimpleNamespace(messages=messages), cache_clock=self.clock)
+
+    async def turn(self, runner, **changes):
+        recorder = Recorder()
+        base = dict(conversation_id=self.conversation, budget=1.0)
+        await runner.run(turn_input(**{**base, **changes}), recorder.hooks)
+        return recorder
+
+    async def test_recent_cached_turn_lets_a_long_conversation_continue(self):
+        messages = FakeMessages(message=cached_reply(written=290_000), input_tokens=290_000)
+        runner = self.runner(messages)
+        await self.turn(runner, budget=100)  # 第一回合：寫入 29 萬 token 的快取
+        messages.input_tokens, messages.message = 300_000, cached_reply(read=290_000, written=10_000)
+        self.clock.now += 239  # 4 分鐘內
+        await self.turn(runner, history=self.history)
+        # 樂觀：29 萬 × 0.1 + 1 萬 × 1.25，每百萬 $4 → $0.166；最壞：30 萬 × 1.25 × $4 → $1.5。
+        # 輸出預算取 min(1 − 0.166, 2 × 1 − 1.5) = $0.5 → 每百萬 $20 → 25,000 token。
+        self.assertEqual(messages.streamed[-1]['max_tokens'], 25_000)
+
+    async def test_without_a_usable_cache_the_same_turn_is_too_long(self):
+        for case in ('no_previous_turn', 'expired', 'other_conversation', 'effort_changed', 'model_changed',
+                     'previous_turn_failed'):
+            with self.subTest(case=case):
+                self.conversation = str(uuid.uuid4())
+                messages = FakeMessages(message=cached_reply(written=290_000), input_tokens=290_000)
+                runner = self.runner(messages)
+                if case == 'previous_turn_failed':
+                    messages.message.stop_reason = 'refusal'  # 請求有寫快取，但回合失敗、回覆不在前文裡
+                    with self.assertRaises(Failed):
+                        await self.turn(runner, budget=100)
+                elif case != 'no_previous_turn':
+                    await self.turn(runner, budget=100)
+                changes = {'history': self.history}
+                self.clock.now += 241 if case == 'expired' else 10
+                if case == 'other_conversation':
+                    changes['conversation_id'] = str(uuid.uuid4())
+                if case == 'effort_changed':
+                    changes['effort'] = 'low'
+                if case == 'model_changed':
+                    changes['model'] = 'claude-opus-5'  # 不假設快取就太長；誤用上次的快取線索則會放行
+                messages.input_tokens, messages.message = 300_000, cached_reply()
+                streamed = len(messages.streamed)
+                with self.assertRaises(Failed) as caught:
+                    await self.turn(runner, **changes)
+                self.assertEqual(caught.exception.kind, turns.CONVERSATION_TOO_LONG)
+                self.assertEqual(len(messages.streamed), streamed)  # 沒有送出
+
+    async def test_previous_turn_without_cache_use_is_not_assumed_cached(self):
+        messages = FakeMessages(message=cached_reply(written=0, read=0), input_tokens=290_000)
+        runner = self.runner(messages)
+        await self.turn(runner, budget=100)
+        messages.input_tokens, messages.message = 300_000, cached_reply()
+        self.clock.now += 10
+        with self.assertRaises(Failed) as caught:
+            await self.turn(runner, history=self.history)
+        self.assertEqual(caught.exception.kind, turns.CONVERSATION_TOO_LONG)
+
+
 class ClassifyTest(unittest.TestCase):
     def test_fixed_categories(self):
         cases = [
@@ -317,6 +399,24 @@ class PriceTest(unittest.TestCase):
         self.assertEqual(claude_api.output_limit(1.0, 'claude-opus-5-5', 0), 50_000)
         self.assertEqual(claude_api.output_limit(1.0, 'claude-opus-5-5', 200_000), 0)  # 輸入就花完了
         self.assertIsNone(claude_api.output_limit(1.0, 'claude-unknown', 0))
+
+    def test_output_limit_with_cache_never_lets_worst_case_exceed_twice_the_budget(self):
+        self.assertEqual(claude_api.output_limit(1.0, 'claude-opus-5-5', 300_000, cached_tokens=290_000), 25_000)
+        # 快取比這次輸入還多時，只算到這次輸入為止。
+        self.assertEqual(claude_api.output_limit(1.0, 'claude-opus-5-5', 1_000, cached_tokens=5_000),
+                         claude_api.output_limit(1.0, 'claude-opus-5-5', 1_000, cached_tokens=1_000))
+        for model in claude_api.PRICES:
+            for budget in (0.01, 0.37, 1.0, 5.0, 100.0):
+                for tokens in (0, 1_000, 50_000, 150_000, 400_000, 900_000):
+                    for cached in (0, tokens // 2, tokens):
+                        allowed = claude_api.output_limit(budget, model, tokens, cached_tokens=cached)
+                        price_in, price_out = claude_api.prices(model, tokens)
+                        worst = (tokens * price_in * claude_api.CACHE_WRITE_FACTOR + allowed * price_out) / 1_000_000
+                        limit = budget if cached == 0 else 2 * budget
+                        with self.subTest(model=model, budget=budget, tokens=tokens, cached=cached):
+                            self.assertGreaterEqual(allowed, 0)
+                            if allowed >= claude_api.MIN_OUTPUT:  # 低於這個值不會送出，也就不會花錢
+                                self.assertLessEqual(worst, limit + 1e-9)
 
     def test_haiku_5_5_uses_higher_price_above_100k_input(self):
         self.assertEqual(claude_api.prices('claude-haiku-5-5', 100_000), (0.10, 0.50))
