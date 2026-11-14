@@ -110,8 +110,11 @@ curl -b cookies.txt http://127.0.0.1:8420/api/members
 | `YIQUNREN_PORT` | 監聽的埠 | `8420` |
 | `YIQUNREN_STATE_DIR` | 狀態資料庫目錄（絕對路徑，權限必須是 0700） | `~/.local/state/yiqunren` |
 | `YIQUNREN_FAKE_TURNS` | 設成 `1` 時，私聊回合改由假轉接器回覆（只供開發） | `0` |
+| `YIQUNREN_WRITE_REGISTRY` | 寫入權登記庫的檔案路徑（絕對路徑，不能經符號連結，所在目錄權限必須是 0700）；空字串視同沒設 | 狀態目錄裡的 `write-ownership.sqlite3` |
 
-資料庫建議放在 Linux 檔案系統上；放在 WSL 的 `/mnt/*` 底下會變慢，也不要讓 Windows 端的程式同時開這個檔。
+寫入權登記庫記錄哪個成員正在寫哪個專案範圍（同一範圍同時只允許一個成員寫入，見 `docs/SPEC.md` 的 NFR-2），預設和狀態資料庫放在同一個目錄，不放在 repo 底下。目前只有橋接的回合管理（`scripts/turn_host.py`）和命令列工具 `scripts/write_ownership.py` 會用到，後端還沒有接上。找不到狀態目錄（例如沒有家目錄、也沒設 `YIQUNREN_STATE_DIR`）時，寫入權工具會回報錯誤並禁止開始寫入。
+
+資料庫與登記庫建議放在 Linux 檔案系統上；放在 WSL 的 `/mnt/*` 底下會變慢，也不要讓 Windows 端的程式同時開這些檔。
 
 ## 憑證與費用
 
