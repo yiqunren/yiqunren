@@ -10,7 +10,7 @@ import sys
 import uvicorn
 
 from app.storage import db
-from app.web import config, security
+from app.web import config, members, security
 from app.web.server import create_app
 
 
@@ -25,7 +25,7 @@ def main(argv=None, env=None) -> int:
         return 2
     try:
         settings = config.load(env)
-        db_path = db.prepare(settings.state_dir)
+        db_path = members.prepare_database(settings.state_dir)
     except config.ConfigError as exc:
         print('設定錯誤：' + str(exc), file=sys.stderr)
         return 2

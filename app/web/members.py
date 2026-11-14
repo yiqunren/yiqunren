@@ -5,10 +5,12 @@
 """
 from __future__ import annotations
 
+from pathlib import Path
 import re
 import time
 import unicodedata
 from typing import Annotated
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -20,6 +22,8 @@ from app.storage import db, members, requests
 
 
 KIND = 'member_create'
+DEFAULT_KIND = 'member_default'  # 系統建立的預設成員（FR-1）
+DEFAULT_AUTH_MODE = 'api_key'  # 預設成員一律用 API key 模式（基準，每家都支援）
 TIMEOUT_MINUTES_DEFAULT = 15  # FR-1：預設 15 分鐘，範圍 1～60 分鐘
 SUBSCRIPTION_CLI = 'subscription_cli'
 TERMS_NOTICE = '使用時須遵守該家的服務條款，由擁有者自行負責。'  # FR-1：選訂閱 CLI 模式時的提示
@@ -28,6 +32,25 @@ MODEL = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}')
 EFFORT = re.compile(r'[a-z][a-z0-9_-]{0,19}')
 
 router = APIRouter()
+
+
+def seed_default_members(connection, *, clock=time.time) -> None:
+    """FR-1 預設成員：依登記處順序，每個轉接器建一位（名稱是轉接器名稱、模型空白、不指定推理強度、
+    API key 模式、預設逾時、啟用）。必須在資料庫第一次建立的交易裡執行，見 prepare_database。"""
+    now = clock()
+    for entry in adapters.adapters():
+        if DEFAULT_AUTH_MODE not in entry.auth_modes:
+            raise ValueError('轉接器 %s 不支援 API key 模式，無法建立預設成員' % entry.code)
+        member_id = str(uuid.uuid4())
+        requests.record(connection, member_id, DEFAULT_KIND, {'adapter': entry.code}, now)
+        members.insert(connection, member_id, adapter=entry.code, name=entry.name, model='', effort=None,
+                       auth_mode=DEFAULT_AUTH_MODE, timeout=TIMEOUT_MINUTES_DEFAULT * 60, now=now)
+
+
+def prepare_database(state_dir) -> Path:
+    """建立或升級狀態資料庫；第一次建立時一併建立預設成員。伺服器與指令列都經過這裡，
+    不論哪一個先建立資料庫，預設成員都只建一次。"""
+    return db.prepare(state_dir, on_create=seed_default_members)
 
 
 def _name(value: str) -> str:

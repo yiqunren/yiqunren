@@ -24,6 +24,16 @@ class Claim:
     result: str | None
 
 
+def record(connection: sqlite3.Connection, request_id: str, kind: str, payload, now: float) -> None:
+    """必須在呼叫者的交易裡執行：登記一筆系統自己產生、已取得執行權的請求（例如預設成員）。
+    ID 已存在時丟 sqlite3.IntegrityError，由呼叫者的交易一起撤銷。"""
+    checked_request_id(request_id)
+    if not isinstance(kind, str) or not kind:
+        raise ValueError('請求類別無效')
+    connection.execute('INSERT INTO requests (id, kind, payload_hash, state, created, updated)'
+                       ' VALUES (?, ?, ?, ?, ?, ?)', (request_id, kind, fingerprint(payload), CLAIMED, now, now))
+
+
 def claim(connection: sqlite3.Connection, request_id: str, kind: str, payload, *, clock=time.time,
           on_claim=None) -> Claim:
     """on_claim(connection, now) 只在這次取得執行權時、於同一個交易裡呼叫；它丟出例外時整筆登記一起撤銷。"""

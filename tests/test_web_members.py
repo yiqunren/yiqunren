@@ -55,8 +55,12 @@ class MemberApiTest(unittest.TestCase):
                 'text': 'hello', **changes}
         return body, client.post('/api/turns', json=body)
 
+    def listed(self, client):
+        return client.get('/api/members').json()['members']
+
     def test_create_with_defaults_and_read_back(self):
         client = self.client()
+        seeded = self.listed(client)  # 第一次建立資料庫時的預設成員（FR-1）
         member = self.create(client)
         self.assertEqual({key: member[key] for key in ('adapter', 'adapter_name', 'name', 'model', 'effort',
                                                        'auth_mode', 'timeout_minutes', 'enabled', 'status',
@@ -65,7 +69,7 @@ class MemberApiTest(unittest.TestCase):
                           'effort': None, 'auth_mode': 'api_key', 'timeout_minutes': 15, 'enabled': True,
                           'status': 'idle', 'terms_notice': None})
         self.assertEqual(client.get('/api/members/' + member['id']).json()['member'], member)
-        self.assertEqual(client.get('/api/members').json()['members'], [member])
+        self.assertEqual(self.listed(client), seeded + [member])
 
     def test_full_settings_and_subscription_cli_notice(self):
         client = self.client()
@@ -77,16 +81,18 @@ class MemberApiTest(unittest.TestCase):
 
     def test_create_is_idempotent(self):
         client = self.client()
+        seeded = len(self.listed(client))
         body = self.new()
         first = client.post('/api/members', json=body)
         again = client.post('/api/members', json=body)
         self.assertEqual((first.status_code, again.status_code), (201, 200))
         self.assertEqual(again.json()['member']['id'], first.json()['member']['id'])
         self.assertEqual(client.post('/api/members', json={**body, 'name': 'other'}).status_code, 409)
-        self.assertEqual(len(client.get('/api/members').json()['members']), 1)
+        self.assertEqual(len(self.listed(client)), seeded + 1)
 
     def test_invalid_settings_are_rejected_and_nothing_is_stored(self):
         client = self.client()
+        seeded = self.listed(client)
         cases = [{'adapter': 'nobody'}, {'adapter': 'claude_code', 'auth_mode': 'subscription_cli'},
                  {'auth_mode': 'magic'}, {'timeout_minutes': 0}, {'timeout_minutes': 61},
                  {'timeout_minutes': '5'}, {'timeout_minutes': 5.0}, {'timeout_minutes': True},
@@ -97,7 +103,7 @@ class MemberApiTest(unittest.TestCase):
         for changes in cases:
             with self.subTest(changes=changes):
                 self.assertEqual(client.post('/api/members', json=self.new(**changes)).status_code, 422)
-        self.assertEqual(client.get('/api/members').json()['members'], [])
+        self.assertEqual(self.listed(client), seeded)
 
     def test_model_and_effort_only_when_the_adapter_supports_them(self):
         plain = adapters.Adapter(code='plainbot', name='Plain Bot', turn_fields=frozenset({'message'}),

@@ -34,7 +34,7 @@ def create_app(settings: config.Settings | None = None, *, runner=None,
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.db_path = db.prepare(settings.state_dir)
+        app.state.db_path = members.prepare_database(settings.state_dir)
         app.state.turns = turns.TurnService(app.state.db_path, runner, timeout=turn_timeout)
         app.state.turns.recover()
         try:
