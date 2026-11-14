@@ -13,6 +13,7 @@ const ERROR_LABELS: Record<string, string> = {
   model_unavailable: '模型不存在或不支援（請檢查成員設定的模型名稱）',
   refused: '模型拒絕回答',
   budget_exceeded: '超過花費上限（這位成員的單回合花費上限不夠，回覆沒有保存）',
+  conversation_too_long: '對話太長（前文超過模型能讀的長度，或光是前文就超過這位成員的花費上限；請開新對話，或提高花費上限）',
   timeout: '逾時（超過這位成員的單回合時間上限）',
   reply_too_long: '回覆過長（超過長度上限，回覆沒有保存）',
   internal_error: '內部錯誤',

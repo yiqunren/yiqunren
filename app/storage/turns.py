@@ -28,8 +28,9 @@ SERVICE_BUSY = 'service_busy'  # 該家服務忙碌：太頻繁或暫時出錯
 MODEL_UNAVAILABLE = 'model_unavailable'  # 模型不存在或不支援
 REFUSED = 'refused'  # 模型拒絕回答
 BUDGET_EXCEEDED = 'budget_exceeded'  # 超過成員的單回合花費上限（FR-1）
+CONVERSATION_TOO_LONG = 'conversation_too_long'  # 前文超過模型能讀的長度，或光前文就超過花費上限（FR-2）
 ERROR_KINDS = frozenset({INTERNAL_ERROR, TIMEOUT, REPLY_TOO_LONG, AUTH_FAILED, QUOTA_EXCEEDED, SERVICE_BUSY,
-                         MODEL_UNAVAILABLE, REFUSED, BUDGET_EXCEEDED})
+                         MODEL_UNAVAILABLE, REFUSED, BUDGET_EXCEEDED, CONVERSATION_TOO_LONG})
 
 PROGRESS = 'progress'
 STOPPING = 'stopping'  # 中斷要求已送達轉接器，等它確認程序停止

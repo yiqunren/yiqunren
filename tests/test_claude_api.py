@@ -215,6 +215,25 @@ class RunnerTest(unittest.IsolatedAsyncioTestCase):
                 messages = FakeMessages(message=reply('一半', stop_reason='max_tokens'))
                 self.assertEqual(await self.failed_kind(messages, budget=budget), kind)
 
+    async def test_input_too_big_for_budget_with_history_is_conversation_too_long(self):
+        history = (('第一題', '第一答'),)
+        cases = [
+            # (上限, 輸入 token, 前文, 結果)：上限本身夠輸出 1,024 token、卻被輸入吃掉，而且有前文 → 對話太長
+            (1.0, 200_000, history, turns.CONVERSATION_TOO_LONG),
+            (1.0, 199_000, history, turns.CONVERSATION_TOO_LONG),  # 剩下的不到 1,024 token
+            (1.0, 200_000, (), turns.BUDGET_EXCEEDED),  # 沒有前文：開新對話也沒用
+            (0.01, 0, history, turns.BUDGET_EXCEEDED),  # 上限本身就不夠
+        ]
+        for budget, tokens, past, kind in cases:
+            with self.subTest(budget=budget, tokens=tokens, history=bool(past)):
+                messages = FakeMessages(input_tokens=tokens)
+                self.assertEqual(await self.failed_kind(messages, budget=budget, history=past), kind)
+                self.assertEqual(messages.streamed, [])
+
+    async def test_reply_cut_by_context_window_is_conversation_too_long(self):
+        messages = FakeMessages(message=reply('一半', stop_reason='model_context_window_exceeded'))
+        self.assertEqual(await self.failed_kind(messages), turns.CONVERSATION_TOO_LONG)
+
     async def test_refusal_and_empty_reply_fail(self):
         self.assertEqual(await self.failed_kind(FakeMessages(message=reply('', stop_reason='refusal'))), turns.REFUSED)
         self.assertEqual(await self.failed_kind(FakeMessages(message=reply(None))), turns.INTERNAL_ERROR)
@@ -277,6 +296,9 @@ class ClassifyTest(unittest.TestCase):
             (status_error(anthropic.BadRequestError, 400, 'invalid_request_error',
                           'Your credit balance is too low to access the Anthropic API.'), turns.QUOTA_EXCEEDED),
             (status_error(anthropic.BadRequestError, 400, 'invalid_request_error', 'bad field'), turns.INTERNAL_ERROR),
+            (status_error(anthropic.BadRequestError, 400, 'invalid_request_error',
+                          'prompt is too long: 1000123 tokens > 1000000 maximum'), turns.CONVERSATION_TOO_LONG),
+            (status_error(anthropic.APIStatusError, 413, 'request_too_large'), turns.CONVERSATION_TOO_LONG),
             (status_error(anthropic.NotFoundError, 404, 'not_found_error'), turns.MODEL_UNAVAILABLE),
             (status_error(anthropic.RateLimitError, 429, 'rate_limit_error'), turns.SERVICE_BUSY),
             (status_error(anthropic.InternalServerError, 529, 'overloaded_error'), turns.SERVICE_BUSY),

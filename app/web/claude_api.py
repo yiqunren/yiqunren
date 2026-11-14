@@ -59,6 +59,7 @@ THINKING_BLOCKS = frozenset({'thinking', 'redacted_thinking'})
 THINKING, ANSWERING = 'thinking', 'answering'  # 進度裡的階段（FR-2）
 
 CREDIT_TOO_LOW = 'credit balance is too low'  # API 以 400 回報帳戶額度不足時的訊息（官方 CLI 也這樣判斷）
+PROMPT_TOO_LONG = 'prompt is too long'  # 輸入超過模型能讀的長度時，API 以 400 回報的訊息（官方文件 context windows）
 
 
 def prices(model: str, input_tokens: int) -> tuple[float, float] | None:
@@ -92,8 +93,11 @@ def classify(exc: Exception) -> str:
     if isinstance(exc, anthropic.APIStatusError):
         if exc.status_code == 402 or exc.type == 'billing_error':
             return turns.QUOTA_EXCEEDED
-        if exc.status_code == 400 and CREDIT_TOO_LOW in str(exc.api_message or '').lower():
+        message = str(exc.api_message or '').lower()
+        if exc.status_code == 400 and CREDIT_TOO_LOW in message:
             return turns.QUOTA_EXCEEDED
+        if exc.status_code == 413 or (exc.status_code == 400 and PROMPT_TOO_LONG in message):
+            return turns.CONVERSATION_TOO_LONG
         if exc.status_code >= 500:
             return turns.SERVICE_BUSY
         return turns.INTERNAL_ERROR
@@ -194,7 +198,9 @@ class ClaudeApiRunner(Runner):
                 if allowed is None:
                     raise Failed(turns.MODEL_UNAVAILABLE)
                 if allowed < MIN_OUTPUT:
-                    raise Failed(turns.BUDGET_EXCEEDED)
+                    # 上限本身夠輸出、卻被前文吃掉：開新對話就能繼續，所以記為對話太長（FR-2）。
+                    too_long = bool(turn.history) and output_limit(turn.budget, model, 0) >= MIN_OUTPUT
+                    raise Failed(turns.CONVERSATION_TOO_LONG if too_long else turns.BUDGET_EXCEEDED)
                 if allowed < MAX_OUTPUT:
                     limit, capped = allowed, True
             async with self.client.messages.stream(max_tokens=limit, **params) as stream:
@@ -208,6 +214,8 @@ class ClaudeApiRunner(Runner):
             raise Failed(turns.REFUSED)
         if message.stop_reason == 'max_tokens':
             raise Failed(turns.BUDGET_EXCEEDED if capped else turns.REPLY_TOO_LONG)
+        if message.stop_reason == 'model_context_window_exceeded':
+            raise Failed(turns.CONVERSATION_TOO_LONG)  # 回覆寫到一半撞到模型長度上限，截斷的內容不存
         text = ''.join(block.text for block in message.content if block.type == 'text')
         if not text.strip():
             raise Failed(turns.INTERNAL_ERROR)

@@ -491,20 +491,21 @@ describe('回合結果', () => {
 
   it('FR-2 的每個固定分類都有自己的說明', async () => {
     const kinds = ['auth_failed', 'quota_exceeded', 'service_busy', 'model_unavailable', 'refused', 'budget_exceeded',
-      'timeout', 'reply_too_long', 'internal_error']
+      'conversation_too_long', 'timeout', 'reply_too_long', 'internal_error']
     fakeBackend({
       members: [member()],
       turns: kinds.map((kind, index) =>
         turn({ id: `k${index}`, message: `問題${index}`, state: 'failed', error_kind: kind, reply: null, started: 1000 + index })),
     })
     open(`#/chat/${C1}`)
-    await screen.findByText('問題8', { selector: '.chat-main *' })
+    await screen.findByText(`問題${kinds.length - 1}`, { selector: '.chat-main *' })
     const shown = [...document.querySelectorAll('.chat-main [role], .chat-main p')]
       .map((node) => node.textContent ?? '')
       .filter((text) => text.startsWith('失敗：'))
     expect(new Set(shown).size).toBe(kinds.length)
     expect(shown.some((text) => text.includes('其他錯誤'))).toBe(false)
     expect(screen.getByText('失敗：超過花費上限（這位成員的單回合花費上限不夠，回覆沒有保存）。不會自動重試，要不要重送由你決定。')).toBeTruthy()
+    expect(screen.getByText(/^失敗：對話太長（.*請開新對話，或提高花費上限）。/)).toBeTruthy()
   })
 })
 
