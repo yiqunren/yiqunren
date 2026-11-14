@@ -24,7 +24,7 @@ from app.web.runner import Hooks, Interrupted, TurnInput, Unknown
 from app.web.server import create_app
 from app.web.worker_runner import WorkerTurnRunner
 from scripts import private_cli, turn_host
-from test_web_turns import read_events, read_events_until
+from test_web_turns import add_member, read_events, read_events_until
 
 
 PROGRESS = {'kind': 'item', 'event': 'completed', 'item_type': 'step', 'completed': 1}
@@ -41,11 +41,12 @@ def fields(turn):
 
 
 def new_runner():
-    return WorkerTurnRunner('testbot', auth_mode='api_key', fields=fields)
+    return WorkerTurnRunner('testbot', fields=fields)
 
 
 def new_turn(message='hello'):
-    return TurnInput(str(uuid.uuid4()), str(uuid.uuid4()), 'm1', message, 900)
+    return TurnInput(str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4()), message, 900,
+                     adapter='testbot', auth_mode='api_key')
 
 
 class Bot:
@@ -277,7 +278,7 @@ class WorkerRunnerTest(BridgeEnvironment, unittest.TestCase):
 
     def test_unregistered_provider_is_refused(self):
         with self.assertRaises(ValueError):
-            WorkerTurnRunner('nobody', auth_mode='api_key', fields=fields)
+            WorkerTurnRunner('nobody', fields=fields)
 
     async def start_and_shut_down(self, bridge):
         """第一個伺服器：回合被橋接接受、存下身分後，伺服器關閉（取消工作）。"""
@@ -379,14 +380,16 @@ class HttpThroughBridgeTest(BridgeEnvironment, unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.settings = Settings(host='127.0.0.1', port=8420, state_dir=self.directory / 'state')
+        self.member = add_member(self.settings.state_dir, adapter='testbot', auth_mode='api_key')
         self.bridge = BridgeThread(self.socket)
         self.addCleanup(self.bridge.close)
 
     def app(self):
-        return TestClient(create_app(self.settings, runner=new_runner()))
+        # 依成員的轉接器選執行者（FR-1）：testbot 的成員交給接到橋接的 WorkerTurnRunner。
+        return TestClient(create_app(self.settings, runner={'testbot': new_runner()}))
 
     def body(self):
-        return {'request_id': str(uuid.uuid4()), 'conversation_id': str(uuid.uuid4()), 'member': 'm1',
+        return {'request_id': str(uuid.uuid4()), 'conversation_id': str(uuid.uuid4()), 'member': self.member,
                 'text': 'hello'}
 
     def test_turn_survives_server_restart_and_completes(self):

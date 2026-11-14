@@ -57,6 +57,25 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         # 轉接器接受回合後存下的身分（JSON），伺服器重啟後用來接回；不含訊息、回覆或憑證。
         'ALTER TABLE turns ADD COLUMN bridge_record TEXT',
     ),
+    (
+        # FR-1 成員設定；id 就是新增時的請求 ID。不存憑證（NFR-4）。timeout 是秒數。
+        'CREATE TABLE members ('
+        ' id TEXT PRIMARY KEY REFERENCES requests(id),'
+        ' adapter TEXT NOT NULL,'
+        ' name TEXT NOT NULL,'
+        ' model TEXT NOT NULL,'
+        ' effort TEXT,'
+        ' auth_mode TEXT NOT NULL,'
+        ' timeout INTEGER NOT NULL,'
+        ' enabled INTEGER NOT NULL,'
+        ' created REAL NOT NULL,'
+        ' updated REAL NOT NULL'
+        ')',
+        # 回合記下當時的成員名稱與轉接器：成員刪除後對話照樣看得懂，重啟接回時找得到執行者。
+        'ALTER TABLE turns ADD COLUMN member_name TEXT',
+        'ALTER TABLE turns ADD COLUMN adapter TEXT',
+        'CREATE INDEX turns_member ON turns(member, started)',
+    ),
 )
 SCHEMA_VERSION = len(MIGRATIONS)
 

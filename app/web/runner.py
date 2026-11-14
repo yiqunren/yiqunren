@@ -45,11 +45,16 @@ from typing import Callable
 
 @dataclass(frozen=True)
 class TurnInput:
+    """一個回合的輸入。member 是成員 ID；adapter 以後的欄位取自成員設定（FR-1）。"""
     turn_id: str
     conversation_id: str
     member: str
     message: str
     timeout: float  # 秒
+    adapter: str = ''
+    model: str = ''  # 空白表示用該家預設
+    effort: str | None = None
+    auth_mode: str = ''
 
 
 @dataclass(frozen=True)

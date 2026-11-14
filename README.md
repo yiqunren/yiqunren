@@ -60,16 +60,20 @@ uv sync
 目前的 API：
 
 - `GET /api/health`：健康檢查。
-- `POST /api/turns`：送出一個私聊回合，內容是 JSON：`request_id`、`conversation_id`（都是前端產生的 UUID）、`member`、`text`。同一個 `request_id` 重送會回傳原本的回合，不會重複執行；同一段對話同時只能有一個進行中的回合。
+- `POST /api/members`：新增一位成員（你設定的一位 AI 參與者），內容是 JSON：`request_id`（前端產生的 UUID，也是之後的成員 ID）、`adapter`（轉接器代號，例如 `codex`）、`name`、`auth_mode`（`api_key` 或 `subscription_cli`，要是該轉接器支援的），可選 `model`（空白表示用該家預設）、`effort`（推理強度，該轉接器支援時才能設）、`timeout_minutes`（單回合逾時，1～60 分鐘，預設 15）。同一個 `request_id` 重送回傳原本的成員。選訂閱 CLI 模式時，回傳的 `terms_notice` 會帶服務條款提示。模型目前只存文字，還不比對各家的模型清單。
+- `GET /api/members`、`GET /api/members/{id}`：列出成員或查一位，含狀態 `status`：`running`（有進行中回合）、`needs_review`（最近一個回合是「未知」，需要你核對）、`idle`。
+- `PATCH /api/members/{id}`：只送要改的欄位：`name`、`model`、`effort`（送 `null` 清除）、`auth_mode`、`timeout_minutes`、`enabled`（`false` 是停用：設定保留、不能送新回合，已經在跑的回合不受影響）。轉接器不能改，要換就新增另一位成員。
+- `DELETE /api/members/{id}`：刪除成員設定；過去的對話照樣保留，回合上記著當時的成員名稱。還有進行中回合時回 409。
+- `POST /api/turns`：送出一個私聊回合，內容是 JSON：`request_id`、`conversation_id`（都是前端產生的 UUID）、`member`（成員 ID）、`text`。成員不存在回 422、已停用回 409；回合使用該成員的轉接器、模型、推理強度、認證模式與逾時。同一個 `request_id` 重送會回傳原本的回合，不會重複執行；同一段對話同時只能有一個進行中的回合。
 - `POST /api/turns/{id}/interrupt`：把中斷要求交給轉接器，送達後回 202，SSE 會先送一個 `stopping`（中斷中）事件。結果由 SSE 的結束事件告知：轉接器確認程序已停止才是「已中斷」，無法確認時是「未知」。回合已結束時回 409；要求沒有送達轉接器時回 502，回合可能仍在執行。
-- `GET /api/turns/{id}`：查回合狀態（執行中、完成、失敗、已中斷、未知），含送出的訊息與回覆。單回合逾時目前固定 15 分鐘（成員設定做好後改由各成員設定），由轉接器或它的橋接執行：逾時且確認程序停止是「失敗（逾時）」，無法確認時是「未知」。回覆以 UTF-8 編碼超過 100,000 位元組時是「失敗（回覆過長）」，回覆不存、也不截斷。
+- `GET /api/turns/{id}`：查回合狀態（執行中、完成、失敗、已中斷、未知），含送出的訊息與回覆。單回合逾時依成員設定，由轉接器或它的橋接執行：逾時且確認程序停止是「失敗（逾時）」，無法確認時是「未知」。回覆以 UTF-8 編碼超過 100,000 位元組時是「失敗（回覆過長）」，回覆不存、也不截斷。
 - `GET /api/conversations/{conversation_id}`：依時間順序列出一段對話的所有回合（訊息與回覆）。
 - `DELETE /api/conversations/{conversation_id}`：刪除一整段對話的訊息、回覆與事件；還有進行中回合時回 409。刪除後用同一個 `request_id` 重送會回 410，不會重新執行。
 - `GET /api/turns/{id}/events`：用 SSE 接收進度、中斷中與結束事件。不帶 `Last-Event-ID` 時從頭重送，帶了就只補送之後的事件。
 
 伺服器關閉時不會停止還在執行的回合。重新啟動後，轉接器已經存下身分的回合會接回來繼續等結果；接不回來的（例如沒有身分紀錄，或橋接也重啟過）標為「未知」。
 
-還沒接上轉接器之前，送出回合會回 503。開發時可設 `YIQUNREN_FAKE_TURNS=1`，改用假轉接器：它不呼叫任何 AI，送出幾個進度後回覆一段固定文字。
+還沒接上轉接器之前，送出回合會回 503（成員的轉接器沒有接上時也是）。開發時可設 `YIQUNREN_FAKE_TURNS=1`，改用假轉接器：所有轉接器的成員都由它回覆，它不呼叫任何 AI，送出幾個進度後回覆一段固定文字。
 
 預設只聽 `127.0.0.1:8420`，狀態資料庫放在 `~/.local/state/yiqunren/`（有設 `XDG_STATE_HOME` 時改放在它底下）。可用環境變數覆寫：
 

@@ -132,7 +132,8 @@ class TurnStoreTest(unittest.TestCase):
     def test_bridge_record_is_saved_only_while_running_and_kept_for_reattach(self):
         recorded, plain = self.start(), self.start(conversation=str(uuid.uuid4()))
         self.assertTrue(turns.save_record(self.connection, recorded, {'epoch': 'e1', 'request_id': 'r1'}))
-        self.assertEqual(turns.recorded_running(self.connection), [(recorded, '{"epoch": "e1", "request_id": "r1"}')])
+        self.assertEqual(turns.recorded_running(self.connection),
+                         [(recorded, '{"epoch": "e1", "request_id": "r1"}', None)])  # 這裡建立回合時沒給轉接器
         # 重啟時只把沒有身分的回合標為未知，有身分的留給接回。
         self.assertEqual(turns.mark_running_unknown(self.connection, 5.0, keep_recorded=True), [plain])
         self.assertEqual(turns.get(self.connection, recorded)['state'], 'running')

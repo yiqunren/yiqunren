@@ -8,12 +8,28 @@ import uuid
 
 from fastapi.testclient import TestClient
 
-from app.storage import db
+from app.storage import db, members, requests
 from app.web.config import Settings
 from app.web.fake_runner import FakeRunner
 from app.web.runner import Failed, Interrupted, Runner, Unknown
 from app.web.server import create_app
 from app.web.turns import MAX_MESSAGE_CHARS, MAX_REPLY_BYTES
+
+
+def add_member(state_dir, *, adapter='codex', name='成員一', auth_mode='api_key', timeout=900, enabled=True):
+    """直接在狀態資料庫建立一位成員（不經 HTTP），回傳成員 ID。"""
+    member_id = str(uuid.uuid4())
+    connection = db.connect(db.prepare(Path(state_dir)))
+    try:
+        requests.claim(connection, member_id, 'member_create', {'test': member_id},
+                       on_claim=lambda c, now: members.insert(c, member_id, adapter=adapter, name=name, model='',
+                                                              effort=None, auth_mode=auth_mode, timeout=timeout,
+                                                              now=now))
+        if not enabled:
+            members.update(connection, member_id, {'enabled': False}, 0.0)
+    finally:
+        connection.close()
+    return member_id
 
 
 def read_events(client, turn_id, last_event_id=None):
@@ -102,6 +118,7 @@ class TurnApiTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix='yiqunren-web-turns-test-')
         self.addCleanup(self.temporary.cleanup)
         self.settings = Settings(host='127.0.0.1', port=8420, state_dir=Path(self.temporary.name) / 'state')
+        self.member = add_member(self.settings.state_dir)
 
     def client(self, runner=None, settings=None, **options):
         client = TestClient(create_app(settings or self.settings,
@@ -113,7 +130,7 @@ class TurnApiTest(unittest.TestCase):
 
     def body(self, **changes):
         return {'request_id': str(uuid.uuid4()), 'conversation_id': str(uuid.uuid4()),
-                'member': 'm1', 'text': 'hello', **changes}
+                'member': self.member, 'text': 'hello', **changes}
 
     def test_turn_runs_to_completion_and_streams_ordered_events(self):
         client = self.client()
@@ -416,9 +433,61 @@ class TurnApiTest(unittest.TestCase):
         with client:
             self.assertEqual(client.post('/api/turns', json=self.body()).status_code, 202)
 
+    def test_turn_uses_the_member_settings(self):
+        class Capturing(Runner):
+            seen = []
+
+            async def run(self, turn, hooks):
+                Capturing.seen.append(turn)
+                hooks.save('ok')
+
+        client = self.client(runner=Capturing())
+        created = client.post('/api/members', json={
+            'request_id': str(uuid.uuid4()), 'adapter': 'grok', 'name': 'Grok 深度', 'model': 'grok-4',
+            'effort': 'high', 'auth_mode': 'subscription_cli', 'timeout_minutes': 30}).json()['member']
+        body = self.body(member=created['id'])
+        self.assertEqual(client.post('/api/turns', json=body).status_code, 202)
+        read_events(client, body['request_id'])
+        [turn] = Capturing.seen
+        self.assertEqual((turn.member, turn.timeout, turn.adapter, turn.model, turn.effort, turn.auth_mode),
+                         (created['id'], 1800, 'grok', 'grok-4', 'high', 'subscription_cli'))
+        row = client.get('/api/turns/' + body['request_id']).json()['turn']
+        self.assertEqual((row['member_name'], row['adapter']), ('Grok 深度', 'grok'))
+
+    def test_missing_or_disabled_member_is_refused_and_nothing_is_stored(self):
+        client = self.client()
+        disabled = add_member(self.settings.state_dir, enabled=False)
+        for member, status in ((str(uuid.uuid4()), 422), (disabled, 409)):
+            with self.subTest(status=status):
+                body = self.body(member=member)
+                self.assertEqual(client.post('/api/turns', json=body).status_code, status)
+                self.assertEqual(client.get('/api/turns/' + body['request_id']).status_code, 404)
+                # 沒有留下請求登記：成員可以用之後，同一個請求可以重送成功。
+        client.patch('/api/members/' + disabled, json={'enabled': True})
+        self.assertEqual(client.post('/api/turns', json=body).status_code, 202)
+
+    def test_resend_after_member_is_disabled_returns_the_original_turn(self):
+        client = self.client()
+        body = self.body()
+        client.post('/api/turns', json=body)
+        read_events(client, body['request_id'])
+        client.patch('/api/members/' + self.member, json={'enabled': False})
+        resent = client.post('/api/turns', json=body)
+        self.assertEqual((resent.status_code, resent.json()['turn']['state']), (200, 'completed'))
+
+    def test_member_whose_adapter_has_no_runner_is_refused(self):
+        client = self.client(runner={'grok': FakeRunner(steps=1, tick=0.01)})  # 成員是 codex
+        body = self.body()
+        self.assertEqual(client.post('/api/turns', json=body).status_code, 503)
+        self.assertEqual(client.get('/api/turns/' + body['request_id']).status_code, 404)
+        grok = add_member(self.settings.state_dir, adapter='grok')
+        other = self.body(member=grok)
+        self.assertEqual(client.post('/api/turns', json=other).status_code, 202)
+        self.assertEqual(read_events(client, other['request_id'])[-1]['data']['state'], 'completed')
+
     def test_invalid_requests_are_rejected(self):
         client = self.client()
-        for changes in ({'request_id': 'not-a-uuid'}, {'conversation_id': 'x'}, {'member': ''},
+        for changes in ({'request_id': 'not-a-uuid'}, {'conversation_id': 'x'}, {'member': ''}, {'member': 'm1'},
                         {'text': ''}, {'text': 'a' * (MAX_MESSAGE_CHARS + 1)}, {'extra': 1}):
             with self.subTest(changes=list(changes)):
                 self.assertEqual(client.post('/api/turns', json=self.body(**changes)).status_code, 422)
@@ -434,6 +503,7 @@ class InterruptBeforeStartTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix='yiqunren-interrupt-test-') as temporary:
             path = db.prepare(Path(temporary) / 'state')
+            member = add_member(Path(temporary) / 'state')
 
             class OrderRecordingRunner(FakeRunner):
                 calls = []
@@ -452,7 +522,7 @@ class InterruptBeforeStartTest(unittest.TestCase):
             async def scenario():
                 service = TurnService(path, runner)
                 body = TurnRequest(request_id=str(uuid.uuid4()), conversation_id=str(uuid.uuid4()),
-                                   member='m1', text='hi')
+                                   member=member, text='hi')
                 self.assertEqual(service.start(body)[0], 202)
                 self.assertEqual((await service.interrupt(body.request_id))[0], 202)
                 await asyncio.sleep(0.05)

@@ -29,11 +29,11 @@ PENDING_STOP_WAIT = worker_turn.CONTROL_TIMEOUT + 5
 
 
 class WorkerTurnRunner(Runner):
-    """provider：轉接器代號；auth_mode：該成員選的認證模式；fields(turn)：產生該家 turn_begin 的欄位。"""
+    """provider：轉接器代號；fields(turn)：產生該家 turn_begin 的欄位。認證模式取自回合（成員設定，FR-1）。"""
 
-    def __init__(self, provider: str, *, auth_mode: str, fields: Callable[[TurnInput], dict]):
+    def __init__(self, provider: str, *, fields: Callable[[TurnInput], dict]):
         adapters.get(provider)  # 未登記的代號直接拒絕
-        self.provider, self.auth_mode, self.fields = provider, auth_mode, fields
+        self.provider, self.fields = provider, fields
         self._tracks: dict[str, worker_turn.Track] = {}
         self._handles: dict[str, worker_turn.Handle] = {}
         self._pending: set[str] = set()  # 還沒拿到橋接身分就送到的中斷要求
@@ -63,7 +63,7 @@ class WorkerTurnRunner(Runner):
             async with worker_turn.tracked(None, timeout=int(turn.timeout), on_begin=on_begin) as track:
                 self._tracks[turn.turn_id] = track
                 with _mapped(lambda: record_failed):
-                    result = await worker_turn.run(self.provider, self.fields(turn), auth_mode=self.auth_mode,
+                    result = await worker_turn.run(self.provider, self.fields(turn), auth_mode=turn.auth_mode,
                                                    on_progress=hooks.progress)
                 # 區塊正常結束（save 成功）後 tracked 才送 turn_ack；save 失敗就不 ack，橋接保留回覆。
                 hooks.save(_content(result))

@@ -16,8 +16,10 @@ from fastapi.responses import JSONResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.services.turn_contract import TIMEOUT_DEFAULT, request_id as checked_uuid
-from app.storage import db, requests, turns
+from collections.abc import Mapping
+
+from app.services.turn_contract import request_id as checked_uuid
+from app.storage import db, members, requests, turns
 from app.web.runner import Failed, Hooks, Interrupted, TurnInput, Unknown
 
 
@@ -34,10 +36,10 @@ class TurnRequest(BaseModel):
 
     request_id: str
     conversation_id: str
-    member: str = Field(min_length=1, max_length=160)
+    member: str  # 成員 ID（FR-1）
     text: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
 
-    @field_validator('request_id', 'conversation_id')
+    @field_validator('request_id', 'conversation_id', 'member')
     @classmethod
     def _uuid(cls, value: str) -> str:
         return checked_uuid(value)
@@ -48,6 +50,8 @@ def snapshot(row) -> dict:
         'id': row['id'],
         'conversation_id': row['conversation_id'],
         'member': row['member'],
+        'member_name': row['member_name'],  # 送出時的成員名稱；成員刪除後照樣顯示
+        'adapter': row['adapter'],
         'message': row['message'],
         'state': row['state'],
         'error_kind': row['error_kind'],
@@ -57,14 +61,20 @@ def snapshot(row) -> dict:
     }
 
 
-class TurnService:
-    """一個 app 一份。runner 照 app/web/runner.py 的介面；None 表示還沒接上轉接器。
+class MemberUnavailable(Exception):
+    def __init__(self, status: int, detail: str):
+        super().__init__(detail)
+        self.status, self.detail = status, detail
 
-    timeout 是交給轉接器的單回合逾時（秒），由轉接器或它的橋接執行。成員設定（FR-1）做好之前，
-    所有回合都用 TIMEOUT_DEFAULT（15 分鐘）。
+
+class TurnService:
+    """一個 app 一份。runner 照 app/web/runner.py 的介面：單一執行者（所有轉接器共用，例如假轉接器）、
+    {轉接器代號: 執行者}，或 None（還沒接上任何轉接器）。
+
+    單回合逾時取自成員設定（FR-1），交給轉接器或它的橋接執行。timeout 不是 None 時改用它（只供測試縮短）。
     """
 
-    def __init__(self, db_path, runner, *, timeout: float = TIMEOUT_DEFAULT, clock=time.time):
+    def __init__(self, db_path, runner, *, timeout: float | None = None, clock=time.time):
         self.db_path, self.runner, self.timeout, self.clock = db_path, runner, timeout, clock
         self._running: dict[str, asyncio.Task] = {}
         self._versions: dict[str, int] = {}
@@ -72,6 +82,11 @@ class TurnService:
 
     def _connect(self):
         return db.connect(self.db_path)
+
+    def runner_for(self, adapter: str | None):
+        if isinstance(self.runner, Mapping):
+            return self.runner.get(adapter)
+        return self.runner
 
     def recover(self) -> list[str]:
         """伺服器啟動時呼叫（要在事件迴圈裡）：上次留下的進行中回合，有轉接器身分的交給 resume 接回，
@@ -81,24 +96,25 @@ class TurnService:
         try:
             now = self.clock()
             unknown = turns.mark_running_unknown(connection, now, keep_recorded=self.runner is not None)
-            for turn_id, text in turns.recorded_running(connection) if self.runner is not None else ():
+            for turn_id, text, adapter in turns.recorded_running(connection) if self.runner is not None else ():
                 try:
                     record = json.loads(text)
                 except ValueError:
                     record = None
-                if isinstance(record, dict):
-                    resumable.append((turn_id, record))
+                runner = self.runner_for(adapter)
+                if isinstance(record, dict) and runner is not None:
+                    resumable.append((turn_id, record, runner))
                 elif turns.finish(connection, turn_id, turns.UNKNOWN, now):
                     unknown.append(turn_id)
         finally:
             connection.close()
-        for turn_id, record in resumable:
-            self._spawn(turn_id, lambda hooks, t=turn_id, r=record: self._resume(t, r, hooks))
+        for turn_id, record, runner in resumable:
+            self._spawn(turn_id, lambda hooks, t=turn_id, r=record, x=runner: self._resume(x, t, r, hooks))
         return unknown
 
-    async def _resume(self, turn_id: str, record: dict, hooks: Hooks) -> None:
+    async def _resume(self, runner, turn_id: str, record: dict, hooks: Hooks) -> None:
         try:
-            await self.runner.resume(turn_id, record, hooks)
+            await runner.resume(turn_id, record, hooks)
         except NotImplementedError:
             raise Unknown('resume_unsupported') from None
 
@@ -134,15 +150,30 @@ class TurnService:
         if self.runner is None:
             return 503, {'detail': '尚未接上任何轉接器'}
         payload = {'conversation_id': body.conversation_id, 'member': body.member, 'text': body.text}
+        picked = {}
+
+        def claim_turn(connection, now):
+            # 在同一個交易裡查成員：檢查到寫入之間成員不會被改掉或刪掉。
+            member = members.get(connection, body.member)
+            if member is None:
+                raise MemberUnavailable(422, '找不到這位成員')
+            if not member['enabled']:
+                raise MemberUnavailable(409, '這位成員已停用')
+            if self.runner_for(member['adapter']) is None:
+                raise MemberUnavailable(503, '這位成員的轉接器還沒接上')
+            turns.insert_running(connection, body.request_id, body.conversation_id, body.member, body.text, now,
+                                 member_name=member['name'], adapter=member['adapter'])
+            picked['member'] = member
+
         connection = self._connect()
         try:
-            claim = requests.claim(
-                connection, body.request_id, KIND, payload, clock=self.clock,
-                on_claim=lambda c, now: turns.insert_running(c, body.request_id, body.conversation_id,
-                                                             body.member, body.text, now))
+            claim = requests.claim(connection, body.request_id, KIND, payload, clock=self.clock,
+                                   on_claim=claim_turn)
             row = turns.get(connection, body.request_id)
         except turns.ConversationBusy:
             return 409, {'detail': '這段對話還有進行中的回合'}
+        except MemberUnavailable as exc:
+            return exc.status, {'detail': exc.detail}
         finally:
             connection.close()
         if claim.outcome == requests.REJECTED:
@@ -152,8 +183,13 @@ class TurnService:
                 return 410, {'detail': '這個請求所屬的對話已被刪除'}
             return 409, {'detail': '這個請求 ID 已用於其他用途'}
         if claim.outcome == requests.CLAIMED:
-            turn = TurnInput(body.request_id, body.conversation_id, body.member, body.text, self.timeout)
-            self._spawn(body.request_id, lambda hooks: self.runner.run(turn, hooks))
+            member = picked['member']
+            turn = TurnInput(body.request_id, body.conversation_id, body.member, body.text,
+                             self.timeout if self.timeout is not None else member['timeout'],
+                             adapter=member['adapter'], model=member['model'], effort=member['effort'],
+                             auth_mode=member['auth_mode'])
+            runner = self.runner_for(member['adapter'])
+            self._spawn(body.request_id, lambda hooks: runner.run(turn, hooks))
             return 202, {'turn': snapshot(row)}
         return 200, {'turn': snapshot(row)}
 
@@ -172,7 +208,10 @@ class TurnService:
         if row['state'] != turns.RUNNING or task is None or task.done():
             return 409, {'detail': '回合已經結束', 'turn': snapshot(row)}
         try:
-            await self.runner.stop(turn_id)
+            runner = self.runner_for(row['adapter'])
+            if runner is None:
+                raise LookupError('沒有這個轉接器的執行者')
+            await runner.stop(turn_id)
         except Exception as exc:
             logger.warning('回合 %s 的中斷要求沒有送達：%s', turn_id, type(exc).__name__)
             return 502, {'detail': '中斷要求沒有送達轉接器，回合可能仍在執行', 'turn': snapshot(self.get(turn_id) or row)}

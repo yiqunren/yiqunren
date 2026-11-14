@@ -33,15 +33,17 @@ class ConversationBusy(RuntimeError):
 
 
 def insert_running(connection: sqlite3.Connection, turn_id: str, conversation_id: str, member: str,
-                   message: str, now: float) -> None:
-    """必須在呼叫者的交易裡執行（requests.claim 的 on_claim）。"""
+                   message: str, now: float, *, member_name: str | None = None, adapter: str | None = None) -> None:
+    """必須在呼叫者的交易裡執行（requests.claim 的 on_claim）。member 是成員 ID；
+    member_name、adapter 是當時的成員名稱與轉接器（成員刪除後對話照樣看得懂，重啟接回時找得到執行者）。"""
     busy = connection.execute('SELECT 1 FROM turns WHERE conversation_id = ? AND state = ?',
                               (conversation_id, RUNNING)).fetchone()
     if busy:
         raise ConversationBusy('這段對話還有進行中的回合')
     try:
-        connection.execute('INSERT INTO turns (id, conversation_id, member, message, state, started)'
-                           ' VALUES (?, ?, ?, ?, ?, ?)', (turn_id, conversation_id, member, message, RUNNING, now))
+        connection.execute('INSERT INTO turns (id, conversation_id, member, member_name, adapter, message, state,'
+                           ' started) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                           (turn_id, conversation_id, member, member_name, adapter, message, RUNNING, now))
     except sqlite3.IntegrityError as exc:
         raise ConversationBusy('這段對話還有進行中的回合') from exc
 
@@ -130,11 +132,11 @@ def save_record(connection: sqlite3.Connection, turn_id: str, record: dict) -> b
                                    (text, turn_id, RUNNING)).rowcount)
 
 
-def recorded_running(connection: sqlite3.Connection) -> list[tuple[str, str]]:
-    """進行中、而且有轉接器身分的回合：(回合 ID, 身分 JSON)。"""
-    return [(row['id'], row['bridge_record']) for row in connection.execute(
-        'SELECT id, bridge_record FROM turns WHERE state = ? AND bridge_record IS NOT NULL ORDER BY started, rowid',
-        (RUNNING,))]
+def recorded_running(connection: sqlite3.Connection) -> list[tuple[str, str, str | None]]:
+    """進行中、而且有轉接器身分的回合：(回合 ID, 身分 JSON, 轉接器代號)。"""
+    return [(row['id'], row['bridge_record'], row['adapter']) for row in connection.execute(
+        'SELECT id, bridge_record, adapter FROM turns WHERE state = ? AND bridge_record IS NOT NULL'
+        ' ORDER BY started, rowid', (RUNNING,))]
 
 
 def _finish_in_transaction(connection, turn_id, state, now, reply, error_kind) -> bool:

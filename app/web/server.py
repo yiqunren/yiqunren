@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.storage import db
-from app.web import config, turns
+from app.web import config, members, turns
 from app.web.fake_runner import FakeRunner
 
 
@@ -15,9 +15,10 @@ TELEMETRY_OFF = {'auto_configure': False, 'tracing': False, 'metrics': False, 'l
 
 
 def create_app(settings: config.Settings | None = None, *, runner=None,
-               turn_timeout: float = turns.TIMEOUT_DEFAULT) -> FastAPI:
-    """runner：私聊回合的執行者（測試注入用）；沒給時，只有設定 fake_turns 才用假轉接器。
-    turn_timeout：單回合逾時秒數；成員設定（FR-1）做好之前一律用預設 15 分鐘，測試可以調短。"""
+               turn_timeout: float | None = None) -> FastAPI:
+    """runner：私聊回合的執行者（單一執行者或 {轉接器代號: 執行者}，測試注入用）；
+    沒給時，只有設定 fake_turns 才用假轉接器（所有轉接器共用）。
+    turn_timeout：只供測試縮短單回合逾時；None 表示用各成員的設定（FR-1）。"""
     settings = settings or config.load()
     if runner is None and settings.fake_turns:
         runner = FakeRunner()
@@ -46,5 +47,6 @@ def create_app(settings: config.Settings | None = None, *, runner=None,
             connection.close()
         return {'status': 'ok', 'schema_version': version}
 
+    app.include_router(members.router)
     app.include_router(turns.router)
     return app
