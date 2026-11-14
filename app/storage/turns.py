@@ -32,10 +32,21 @@ class ConversationBusy(RuntimeError):
     pass
 
 
+class ConversationMemberMismatch(RuntimeError):
+    """這段對話屬於另一位成員（FR-2：一段對話只屬於一位成員）。"""
+
+
+TITLE_CHARS = 60  # 對話清單裡第一則訊息的開頭，最多幾個字
+
+
 def insert_running(connection: sqlite3.Connection, turn_id: str, conversation_id: str, member: str,
                    message: str, now: float, *, member_name: str | None = None, adapter: str | None = None) -> None:
     """必須在呼叫者的交易裡執行（requests.claim 的 on_claim）。member 是成員 ID；
     member_name、adapter 是當時的成員名稱與轉接器（成員刪除後對話照樣看得懂，重啟接回時找得到執行者）。"""
+    other = connection.execute('SELECT 1 FROM turns WHERE conversation_id = ? AND member != ? LIMIT 1',
+                               (conversation_id, member)).fetchone()
+    if other:
+        raise ConversationMemberMismatch('這段對話屬於另一位成員')
     busy = connection.execute('SELECT 1 FROM turns WHERE conversation_id = ? AND state = ?',
                               (conversation_id, RUNNING)).fetchone()
     if busy:
@@ -55,6 +66,26 @@ def get(connection: sqlite3.Connection, turn_id: str) -> sqlite3.Row | None:
 def conversation(connection: sqlite3.Connection, conversation_id: str) -> list[sqlite3.Row]:
     return connection.execute('SELECT * FROM turns WHERE conversation_id = ? ORDER BY started, rowid',
                               (conversation_id,)).fetchall()
+
+
+def conversations(connection: sqlite3.Connection) -> list[dict]:
+    """所有對話的摘要，最近有活動的排前面。成員與狀態取自最後一個回合，標題取自第一則訊息的開頭。"""
+    rows = connection.execute('SELECT conversation_id, member, member_name, state, started, finished,'
+                              ' substr(message, 1, ?) AS head, length(message) AS size'
+                              ' FROM turns ORDER BY started, rowid', (TITLE_CHARS * 4,))
+    found: dict[str, dict] = {}
+    for row in rows:
+        item = found.get(row['conversation_id'])
+        if item is None:
+            head = row['head'] or ''
+            words = ' '.join(head.split())  # 換行與連續空白併成一個空白
+            cut = len(words) > TITLE_CHARS or (row['size'] or 0) > len(head)
+            title = words[:TITLE_CHARS] + ('…' if cut else '')
+            item = found[row['conversation_id']] = {'id': row['conversation_id'], 'title': title, 'turns': 0}
+        item['turns'] += 1
+        item['member'], item['member_name'], item['state'] = row['member'], row['member_name'], row['state']
+        item['updated'] = row['finished'] if row['finished'] is not None else row['started']
+    return sorted(found.values(), key=lambda item: item['updated'], reverse=True)
 
 
 def delete_conversation(connection: sqlite3.Connection, conversation_id: str, now: float) -> int:

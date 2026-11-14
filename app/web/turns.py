@@ -172,6 +172,8 @@ class TurnService:
             row = turns.get(connection, body.request_id)
         except turns.ConversationBusy:
             return 409, {'detail': '這段對話還有進行中的回合'}
+        except turns.ConversationMemberMismatch:
+            return 409, {'detail': '這段對話屬於另一位成員，請開新對話'}
         except MemberUnavailable as exc:
             return exc.status, {'detail': exc.detail}
         finally:
@@ -228,6 +230,13 @@ class TurnService:
         connection = self._connect()
         try:
             return turns.conversation(connection, conversation_id)
+        finally:
+            connection.close()
+
+    def conversations(self) -> list[dict]:
+        connection = self._connect()
+        try:
+            return turns.conversations(connection)
         finally:
             connection.close()
 
@@ -333,6 +342,11 @@ def _conversation_id(conversation_id: str) -> str:
         return checked_uuid(conversation_id)
     except ValueError:
         raise HTTPException(status_code=422, detail='對話識別無效') from None
+
+
+@router.get('/api/conversations')
+def list_conversations(service: Annotated[TurnService, Depends(_service)]):
+    return {'conversations': service.conversations()}
 
 
 @router.get('/api/conversations/{conversation_id}')

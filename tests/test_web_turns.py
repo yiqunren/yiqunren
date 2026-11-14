@@ -274,6 +274,72 @@ class TurnApiTest(unittest.TestCase):
         self.assertTrue(all(t['state'] == 'completed' and t['reply'] for t in listed))
         self.assertEqual(client.get('/api/turns/' + body['request_id']).json()['turn']['message'], '第一個問題')
 
+    def test_conversation_belongs_to_one_member(self):
+        client = self.client(runner=FakeRunner(steps=1, tick=0.01))
+        first = self.body()
+        client.post('/api/turns', json=first)
+        read_events(client, first['request_id'])
+        other_member = add_member(self.settings.state_dir, name='成員二')
+        wrong = self.body(conversation_id=first['conversation_id'], member=other_member)
+        response = client.post('/api/turns', json=wrong)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['detail'], '這段對話屬於另一位成員，請開新對話')
+        # 被擋下的請求什麼都沒留下：對話沒有多出回合，請求 ID 也沒被佔用。
+        self.assertEqual(client.get('/api/turns/' + wrong['request_id']).status_code, 404)
+        self.assertEqual(len(client.get('/api/conversations/' + first['conversation_id']).json()['turns']), 1)
+        self.assertEqual(client.post('/api/turns', json={**wrong, 'conversation_id': str(uuid.uuid4())}).status_code,
+                         202)
+        # 原本的成員照樣可以續問。
+        again = self.body(conversation_id=first['conversation_id'])
+        self.assertEqual(client.post('/api/turns', json=again).status_code, 202)
+        read_events(client, again['request_id'])
+        # 對話刪掉之後，同一個對話 ID 可以給別的成員用。
+        self.assertEqual(client.delete('/api/conversations/' + first['conversation_id']).status_code, 204)
+        reused = self.body(conversation_id=first['conversation_id'], member=other_member)
+        self.assertEqual(client.post('/api/turns', json=reused).status_code, 202)
+
+    def test_conversation_list(self):
+        client = self.client(runner=FakeRunner(steps=1, tick=0.01))
+        self.assertEqual(client.get('/api/conversations').json(), {'conversations': []})
+        long_text = '第一行\n\n  第二行   ' + '長' * 400
+        older = self.body(text=long_text)
+        client.post('/api/turns', json=older)
+        read_events(client, older['request_id'])
+        other_member = add_member(self.settings.state_dir, name='成員二')
+        newer = self.body(text='短訊息', member=other_member)
+        client.post('/api/turns', json=newer)
+        read_events(client, newer['request_id'])
+        listed = client.get('/api/conversations').json()['conversations']
+        self.assertEqual([item['id'] for item in listed], [newer['conversation_id'], older['conversation_id']])
+        self.assertEqual(listed[0], {'id': newer['conversation_id'], 'title': '短訊息', 'turns': 1,
+                                     'member': other_member, 'member_name': '成員二', 'state': 'completed',
+                                     'updated': listed[0]['updated']})
+        # 最後活動時間是最後一個回合結束的時間（還沒結束就是開始的時間）。
+        finished = client.get('/api/turns/' + newer['request_id']).json()['turn']
+        self.assertEqual(listed[0]['updated'], finished['finished'])
+        self.assertGreater(finished['finished'], finished['started'])
+        # 標題只有第一則訊息的開頭：空白併成一個，超過長度加刪節號；清單不含訊息全文與回覆。
+        self.assertEqual(listed[1]['title'], ('第一行 第二行 ' + '長' * 400)[:60] + '…')
+        self.assertNotIn('長' * 61, json.dumps(listed, ensure_ascii=False))
+        self.assertNotIn('reply', listed[1])
+        # 續問之後：回合數加一，排到最前面，標題仍是第一則訊息，狀態是最後一個回合的。
+        follow = self.body(conversation_id=older['conversation_id'], text='續問')
+        blocking = self.client(runner=BlockingRunner())
+        blocking.post('/api/turns', json=follow)
+        listed = blocking.get('/api/conversations').json()['conversations']
+        self.assertEqual([item['id'] for item in listed], [older['conversation_id'], newer['conversation_id']])
+        self.assertEqual((listed[0]['turns'], listed[0]['state'], listed[0]['member_name']), (2, 'running', '成員一'))
+        self.assertTrue(listed[0]['title'].startswith('第一行 第二行'))
+        # 成員刪除後，清單照樣顯示當時的名稱；刪除對話後從清單消失。
+        self.assertEqual(blocking.delete('/api/members/' + other_member).status_code, 204)
+        self.assertEqual(blocking.delete('/api/conversations/' + newer['conversation_id']).status_code, 204)
+        listed = blocking.get('/api/conversations').json()['conversations']
+        self.assertEqual([item['id'] for item in listed], [older['conversation_id']])
+
+    def test_conversation_list_requires_pairing(self):
+        with PairedClient(create_app(self.settings, runner=FakeRunner()), pair=False) as client:
+            self.assertEqual(client.get('/api/conversations').status_code, 401)
+
     def test_delete_conversation(self):
         client = self.client(runner=FakeRunner(steps=2, tick=0.2))
         body = self.body()
