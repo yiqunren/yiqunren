@@ -11,16 +11,29 @@ import stat
 import time
 import uuid
 
+from app.web import config
 
-DEFAULT_REGISTRY = Path(__file__).resolve().parents[2] / 'data/write-ownership/registry.sqlite3'
+
+# 預設放在狀態目錄（和後端資料庫同一個 0700 目錄），不放在 repo 底下：repo 可能 clone 在 WSL 的 /mnt/* 上。
+REGISTRY_NAME = 'write-ownership.sqlite3'
 
 
 class OwnershipError(RuntimeError):
     pass
 
 
-def configured_registry():
-    return WriteRegistry(Path(os.environ.get('YIQUNREN_WRITE_REGISTRY', str(DEFAULT_REGISTRY))))
+def default_registry(env=None):
+    try:
+        return config.resolve_state_dir(env) / REGISTRY_NAME
+    except config.ConfigError as exc:
+        raise OwnershipError('找不到狀態目錄，禁止開始寫入') from exc
+
+
+def configured_registry(env=None):
+    """YIQUNREN_WRITE_REGISTRY 有設就用它，否則用狀態目錄裡的登記庫。"""
+    env = os.environ if env is None else env
+    override = env.get('YIQUNREN_WRITE_REGISTRY', '')
+    return WriteRegistry(Path(override) if override else default_registry(env))
 
 
 def _plain(value, label):
@@ -60,7 +73,7 @@ def overlaps(left, right):
 
 
 class WriteRegistry:
-    def __init__(self, path=DEFAULT_REGISTRY, clock=time.time):
+    def __init__(self, path, clock=time.time):
         self.path, self.clock = Path(path), clock
 
     @contextmanager

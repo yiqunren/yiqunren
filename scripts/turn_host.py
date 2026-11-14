@@ -6,7 +6,7 @@
   5 秒後 SIGKILL，確認群組消失才結束。確認不了時狀態為 unknown。
 - turn_ack：App 存檔後丟掉回覆全文。
 
-寫入權：沿用 data/write-ownership 登記。執行期間每分鐘續期；成功、使用者中斷且程序群組已確認結束、
+寫入權：使用狀態目錄裡的寫入權登記庫（app/services/write_ownership.py）。執行期間每分鐘續期；成功、使用者中斷且程序群組已確認結束、
 或橋接以 EndedBeforeWork 回報還沒開始工作時釋放；
 其他失敗（逾時、非 0 退出、解析失敗等）若本回合每個 CLI 程序群組都確認結束、且工作區指紋與啟動前相同
 （scripts/workspace_fingerprint.py）也釋放；其餘（停止未確認、橋接關閉、指紋取不到、工作區有變動）標 unknown，需人工核對。

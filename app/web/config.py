@@ -35,6 +35,16 @@ def default_state_dir(env) -> Path:
     return Path(base) / 'yiqunren'
 
 
+def resolve_state_dir(env=None) -> Path:
+    """狀態目錄：YIQUNREN_STATE_DIR（絕對路徑），沒設時依 XDG 規範。後端資料庫與寫入權登記庫共用。"""
+    env = os.environ if env is None else env
+    raw_state = env.get('YIQUNREN_STATE_DIR', '')
+    state_dir = Path(raw_state) if raw_state else default_state_dir(env)
+    if not state_dir.is_absolute():
+        raise ConfigError('YIQUNREN_STATE_DIR 必須是絕對路徑')
+    return state_dir
+
+
 def load(env=None) -> Settings:
     env = os.environ if env is None else env
 
@@ -48,10 +58,7 @@ def load(env=None) -> Settings:
     if not raw_port.isascii() or not raw_port.isdigit() or not 1 <= int(raw_port) <= 65535:
         raise ConfigError('YIQUNREN_PORT 必須是 1～65535 的整數')
 
-    raw_state = env.get('YIQUNREN_STATE_DIR', '')
-    state_dir = Path(raw_state) if raw_state else default_state_dir(env)
-    if not state_dir.is_absolute():
-        raise ConfigError('YIQUNREN_STATE_DIR 必須是絕對路徑')
+    state_dir = resolve_state_dir(env)
 
     raw_fake = env.get('YIQUNREN_FAKE_TURNS', '')
     if raw_fake not in ('', '0', '1'):

@@ -33,6 +33,9 @@
     - 程序物件屬性名：`_yiqunren_output_tails`
     - 測試的暫存目錄前綴與假持有者名稱
   - 影響的匯入檔案同上一次改名的六個：`app/services/write_ownership.py`、`app/services/worker_turn.py`、`scripts/host_diagnostics.py`、`scripts/private_cli.py`、`tests/test_write_ownership.py`、`tests/test_host_diagnostics.py`。
+- 2026-11-14：寫入權登記庫的預設位置，從 repo 底下的 `data/write-ownership/registry.sqlite3` 改到狀態目錄的 `write-ownership.sqlite3`（和後端資料庫同一個目錄；技術選型報告第 4 節）。`YIQUNREN_WRITE_REGISTRY` 仍可覆寫。
+  - `app/services/write_ownership.py`：`DEFAULT_REGISTRY` 常數改成 `default_registry()`，狀態目錄由 `app/web/config.py` 的 `resolve_state_dir()` 決定，找不到時丟 `OwnershipError`；`configured_registry()` 可傳入環境變數，`YIQUNREN_WRITE_REGISTRY` 設成空字串視同沒設；`WriteRegistry` 的路徑改為必填。
+  - `scripts/turn_host.py`：模組說明裡的登記位置跟著改，不影響行為。
 
 ## 第一批共同事項（2026-11-12）
 
