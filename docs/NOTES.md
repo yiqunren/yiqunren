@@ -29,7 +29,8 @@
   - 相容性變更：`POST /api/turns` 的 `member` 從任意文字改成必須是成員 ID（UUID）。成員不存在 422、已停用 409、該轉接器沒有執行者 503，三種都不留紀錄；成員檢查與寫入回合在同一個交易。回合帶入成員的轉接器、模型、推理強度、認證模式與逾時（`TurnInput` 多了 `adapter`、`model`、`effort`、`auth_mode`）。
   - 執行者可以是單一個（所有轉接器共用）或 `{轉接器代號: 執行者}`；`create_app(turn_timeout=)` 只剩測試縮短逾時用，`None` 表示用成員設定。`WorkerTurnRunner` 的認證模式改取自回合，拿掉建構參數。
   - 資料庫第 5 版：新增 `members` 表（不存憑證；`timeout` 存秒數）；`turns` 加 `member_name`、`adapter` 兩欄（第 5 版之前的回合這兩欄是空的）與 `turns_member` 索引。
-  - 沒做：前端；列出轉接器與其支援項目的 API（做畫面時需要）；依各家模型清單檢查模型名稱（SPEC 分期，等轉接器能提供清單）；FR-10 的「已核對」確認動作。
+  - 轉接器清單 API（2026-11-14，`e1f2b22` SPEC、`3f382ef` 實作）：`GET /api/adapters` 依登記順序列出 `code`、`name`、`auth_modes`、`supports_model`、`supports_effort`、`available`，另附 `terms_notice`。`available` 只代表伺服器目前有這家的執行者，不代表 CLI 已安裝或已登入；不回傳能力描述、模型等級、socket 位置與認證模式專屬欄位。能不能設模型、推理強度的判斷（`settable_fields`）和新增、修改成員的檢查共用。SPEC NFR-7 的「一律從登記處取得」清單加了這一項。
+  - 沒做：前端；依各家模型清單檢查模型名稱（SPEC 分期，等轉接器能提供清單）；FR-10 的「已核對」確認動作。
 - 範圍 C（NFR-3 本機安全，2026-11-14，`a697e45` SPEC、`6535e39` 實作）：
   - SPEC NFR-3 補了配對碼、Cookie、CSRF、Host、大小與頻率限制的細節與已知限制；所有檢查固定開啟，沒有關閉的開關。
   - 實作：`app/web/security.py`（ASGI 中介層 `Guard`＋配對路由）、`app/storage/pairing.py`（配對碼與已配對瀏覽器，只存 SHA-256 雜湊）。檢查順序：Host → CSRF（GET、HEAD 以外）→ 配對 → 請求大小 → 頻率。
@@ -45,14 +46,14 @@
     - 啟動時「還沒有配對任何瀏覽器」的提示只在實機確認過（8420、假轉接器），沒有自動測試。
     - 推論，尚未驗證：前端開發若用 Vite 開發伺服器（不同埠），請求的 `Origin` 會和 `Host` 不同而被擋；做前端時要決定怎麼處理，同時要確保 `fetch` 帶 CSRF 標頭（SSE 的 GET 不需要）。
   - 沒做：前端的配對畫面；HTTPS。
-- 截至 2026-11-14：`6535e39` 是最新的功能 commit；`pytest` 結果 357 passed（`-W error`）。推送現況以 `git status` 為準，筆記更新不一定已推送。還沒有網頁介面、橋接程式（見下方建議第 2 項）。
+- 截至 2026-11-14：`3f382ef` 是最新的功能 commit；`pytest` 結果 361 passed（`-W error`）。推送現況以 `git status` 為準，筆記更新不一定已推送。還沒有網頁介面、橋接程式（見下方建議第 2 項）。
 - 建議的下一步（建議，不是決定）：
   1. （已完成，`95e69a8` SPEC、`d34468c` 實作）FR-2 回覆長度上限：UTF-8 超過 100,000 位元組時回合失敗，分類 `reply_too_long`，回覆不存、不截斷；檢查在服務層 `save`。限制：橋接每次回覆是一行，單行上限 120,000 位元組（`cli_socket.MAX_RESPONSE`），橋接若回傳更大的一行，`worker_turn` 會當成連線失敗，回合變成「未知」而不是「回覆過長」；要明確告知得由橋接端自己先檢查 100,000 位元組並回報，做橋接與協定第 3 版時一起處理。
   2. 接 Codex 的真實轉接器。包住 `worker_turn` 的 `WorkerTurnRunner` 已經有了，剩下的是：
      - 橋接程式從哪來（決定 3，2026-11-14 定案：先請規格側審查匯入舊專案的 `codex_host_bridge`，審查不過或依賴太多再改成本 repo 自己寫；審查結果還沒回來，見「仍待決定」）：repo 裡目前只有 `scripts/turn_host.py`（橋接共用的回合管理）與 `scripts/private_cli.py`，沒有可以啟動、監聽 socket 的橋接程式。
      - 把它接進設定與 `create_app`（成員、認證模式、`fields` 怎麼組：Codex 的欄位是 message、thread_id、workspace、model、effort）。
      - 橋接協定第 3 版加上結構化的錯誤分類（`error_kind`），才分得出 `timeout` 與 `internal_error`；目前橋接逾時回報為一般失敗，只能記成 `internal_error`。決定 1：等做橋接時一起加。
-  3. （後端已完成，`86b8d94`，見上方）FR-1 成員設定。剩下的見上方「沒做」。
+  3. （後端已完成，`86b8d94`；轉接器清單 API `3f382ef`，見上方）FR-1 成員設定。剩下的見上方「沒做」。
   4. （已完成，`a697e45` SPEC、`6535e39` 實作，見上方）範圍 C（NFR-3）：配對、Cookie、CSRF、Host、大小與頻率限制。剩下的見上方「已知限制」與「沒做」。
   5. 前端（React＋TypeScript＋Vite），再接 Grok，最後做 FR-3 群聊。
 
