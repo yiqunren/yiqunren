@@ -41,9 +41,14 @@ def main(argv=None, env=None) -> int:
         count = security.revoke_all(db_path)
         print('已撤銷 %d 個已配對的瀏覽器，尚未使用的配對碼也已作廢。' % count)
         return 0
+    try:
+        app = create_app(settings)  # 接上轉接器時也會檢查設定（例如 Claude（API）需要 ANTHROPIC_API_KEY）
+    except config.ConfigError as exc:
+        print('設定錯誤：' + str(exc), file=sys.stderr)
+        return 2
     if not security.has_sessions(db_path):
         print('還沒有配對任何瀏覽器：另開終端執行 python -m app.web pair 取得配對碼。', file=sys.stderr)
-    uvicorn.run(create_app(settings), host=settings.host, port=settings.port)
+    uvicorn.run(app, host=settings.host, port=settings.port)
     return 0
 
 

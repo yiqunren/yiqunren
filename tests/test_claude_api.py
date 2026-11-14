@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import io
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -11,6 +15,7 @@ import anthropic
 import httpx2
 
 from app.storage import turns
+from app.web import __main__ as web_main
 from app.web import bridges, claude_api
 from app.web.config import ConfigError
 from app.web.runner import Failed, Hooks, Interrupted, TurnInput
@@ -306,6 +311,17 @@ class BuildTest(unittest.TestCase):
                 claude_api.build()
             with self.assertRaises(ConfigError):
                 bridges.runners((claude_api.CODE,), '/nonexistent')
+
+    def test_server_command_prints_one_line_and_exits_without_key(self):
+        with tempfile.TemporaryDirectory(prefix='yiqunren-claude-api-test-') as temporary, \
+                mock.patch.dict('os.environ', {claude_api.KEY_ENV: ''}), \
+                mock.patch('app.web.__main__.uvicorn.run') as run, \
+                contextlib.redirect_stderr(io.StringIO()) as stderr:
+            env = {'YIQUNREN_STATE_DIR': str(Path(temporary) / 'state'), 'YIQUNREN_BRIDGES': claude_api.CODE}
+            self.assertEqual(web_main.main([], env), 2)
+        run.assert_not_called()
+        self.assertEqual(stderr.getvalue(),
+                         '設定錯誤：要接上 Claude（API）必須在啟動後端的環境裡設定 %s\n' % claude_api.KEY_ENV)
 
     def test_bridges_setting_builds_in_process_runner(self):
         with mock.patch.dict('os.environ', {claude_api.KEY_ENV: 'test-placeholder'}):
