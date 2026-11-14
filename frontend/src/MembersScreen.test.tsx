@@ -93,6 +93,42 @@ describe('成員列表', () => {
   })
 })
 
+describe('讀取時連不上伺服器', () => {
+  it('清單讀不到時顯示提示並在背景再讀；伺服器恢復後提示自動消失', async () => {
+    const { state, calls } = fakeBackend({ members: [member()] })
+    state.override = (call) => (call.method === 'GET' ? 'offline' : undefined)
+    show()
+    expect((await screen.findByRole('alert')).textContent).toBe(OFFLINE)
+    state.override = undefined
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull(), { timeout: 3000 })
+    expect(screen.getByText('成員一')).toBeTruthy()
+    expect(calls.filter((call) => call.method !== 'GET')).toEqual([]) // 背景重讀只讀資料
+  })
+
+  it('操作沒送達時不會被自動重做', async () => {
+    const { state, calls } = fakeBackend({ members: [member()] })
+    show()
+    await screen.findByText('成員一')
+    state.override = (call) => (call.method === 'PATCH' ? 'offline' : undefined)
+    fireEvent.click(row('成員一').getByRole('button', { name: '停用' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(OFFLINE)
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    expect(sent(calls, 'PATCH').length).toBe(1)
+    expect(row('成員一').queryByText('已停用')).toBeNull()
+  })
+
+  it('離開成員畫面後不再背景重讀', async () => {
+    const { state, calls } = fakeBackend({ members: [member()] })
+    state.override = (call) => (call.method === 'GET' ? 'offline' : undefined)
+    const { unmount } = render(<MembersScreen onUnauthorized={vi.fn()} />)
+    await screen.findByRole('alert')
+    unmount()
+    const before = calls.length
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    expect(calls.length).toBe(before)
+  })
+})
+
 describe('新增成員', () => {
   it('欄位跟著轉接器支援的項目變，送出的內容正確', async () => {
     const { calls } = fakeBackend()

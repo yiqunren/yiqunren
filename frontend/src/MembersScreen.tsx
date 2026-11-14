@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import * as api from './api'
 import { authModeLabel, MemberForm } from './MemberForm'
@@ -29,19 +29,36 @@ export function MembersScreen({ onUnauthorized }: { onUnauthorized: () => void }
     [onUnauthorized],
   )
 
+  // 連不上伺服器時的背景重讀；離開畫面時停掉。
+  const retry = useRef<{ timer?: number; attempt: number; active: boolean }>({ attempt: 0, active: false })
+
   const load = useCallback(async () => {
+    window.clearTimeout(retry.current.timer)
     try {
       const [adapterList, memberList] = await Promise.all([api.listAdapters(), api.listMembers()])
       setAdapters(adapterList)
       setMembers(memberList)
       setError(null)
+      retry.current.attempt = 0
     } catch (failure) {
       fail(failure)
+      if (api.isOffline(failure) && retry.current.active) {
+        // 稍後再讀，伺服器恢復後提示自動消失。只讀清單，不重做任何操作。
+        window.clearTimeout(retry.current.timer) // 同時有兩次讀取失敗時只留一個
+        retry.current.timer = window.setTimeout(() => void load(), api.retryDelay(retry.current.attempt))
+        retry.current.attempt += 1
+      }
     }
   }, [fail])
 
   useEffect(() => {
+    const state = retry.current
+    state.active = true
     void load()
+    return () => {
+      state.active = false
+      window.clearTimeout(state.timer)
+    }
   }, [load])
 
   async function act(member: api.Member, action: () => Promise<unknown>) {
