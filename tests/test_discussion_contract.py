@@ -9,6 +9,16 @@ from app.services import adapters
 from app.services.discussion_contract import (MAX_WIRE, DiscussionCapacityError, DiscussionDiagnosticError, call_fingerprint, host_order, host_result,
                                              host_schema, make_packet, order, public_run, safe_diagnostic, settled_call, validate_begin, wire)
 
+# 本檔的格位、名單與編號斷言以這三家為準（測試專用的登記資料，SPEC NFR-7 驗收條件允許）；
+# 預設登記之後再加轉接器時，這些斷言不必跟著改。
+BASE_CODES = ("codex", "grok", "claude_code")
+
+
+@pytest.fixture(autouse=True)
+def base_registry():
+    with adapters.override(tuple(adapters.get(code) for code in BASE_CODES)):
+        yield
+
 
 def sample_run():
     return {"run_id": str(uuid4()), "conversation_id": "conv-test", "message": "討論門口繞牆移動",
@@ -30,7 +40,7 @@ def prompt_data(packet):
     return json.loads(packet["prompt"].rsplit("\n", 1)[1])
 
 
-@pytest.mark.parametrize("speaker", adapters.codes())
+@pytest.mark.parametrize("speaker", BASE_CODES)
 def test_ended_member_error_allows_next_slot_without_turning_into_success(speaker):
     call = {"speaker": speaker, "admission": "accepted", "execution": "ended",
             "result": "error", "receipt": {"pid": 100}}

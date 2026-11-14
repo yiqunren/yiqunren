@@ -36,6 +36,8 @@
 - 2026-11-14：寫入權登記庫的預設位置，從 repo 底下的 `data/write-ownership/registry.sqlite3` 改到狀態目錄的 `write-ownership.sqlite3`（和後端資料庫同一個目錄；技術選型報告第 4 節）。`YIQUNREN_WRITE_REGISTRY` 仍可覆寫。
   - `app/services/write_ownership.py`：`DEFAULT_REGISTRY` 常數改成 `default_registry()`，狀態目錄由 `app/web/config.py` 的 `resolve_state_dir()` 決定，找不到時丟 `OwnershipError`；`configured_registry()` 可傳入環境變數，`YIQUNREN_WRITE_REGISTRY` 設成空字串視同沒設；`WriteRegistry` 的路徑改為必填。
   - `scripts/turn_host.py`：模組說明裡的登記位置跟著改，不影響行為。
+- 2026-11-15：預設登記加入第四家 Claude（API）（SPEC NFR-7），群聊名單與格位數會跟著登記處變。
+  - `tests/test_discussion_contract.py`：加上自動套用的 fixture，用測試專用的登記資料（Codex、Grok、Claude Code 三家）跑本檔全部測試；發言者參數化改用同一份三家清單。斷言都沒有改（SPEC NFR-7 驗收條件允許測試改用自己的登記資料）。
 
 ## 第一批共同事項（2026-11-12）
 

@@ -49,8 +49,10 @@ class DefaultMembersTest(unittest.TestCase):
         expected = [{**SETTINGS, 'adapter': entry.code, 'adapter_name': entry.name, 'name': entry.name}
                     for entry in adapters.adapters()]
         self.assertEqual([{key: item[key] for key in SETTINGS} for item in listed], expected)
-        self.assertEqual([item['name'] for item in listed], ['Codex', 'Grok', 'Claude Code'])
-        self.assertEqual(len({item['id'] for item in listed}), 3)
+        self.assertEqual([item['name'] for item in listed], ['Codex', 'Grok', 'Claude Code', 'Claude（API）'])
+        # 支援花費上限的（Claude Code、Claude（API）的 API key 模式）預設 1 美元，其他不設（FR-1）。
+        self.assertEqual([item['max_budget_usd'] for item in listed], [None, None, 1.0, 1.0])
+        self.assertEqual(len({item['id'] for item in listed}), 4)
         for item in listed:
             uuid.UUID(item['id'], version=4)
 
@@ -64,13 +66,13 @@ class DefaultMembersTest(unittest.TestCase):
 
     def test_created_only_once_and_owner_changes_are_kept(self):
         client = self.client()
-        codex, grok, claude = self.listed(client)
+        codex, grok, claude, claude_api = self.listed(client)
         self.assertEqual(client.patch('/api/members/' + codex['id'], json={'name': '改過的名字'}).status_code, 200)
         self.assertEqual(client.delete('/api/members/' + grok['id']).status_code, 204)
         client.__exit__(None, None, None)
         restarted = self.listed(self.client())  # 伺服器重啟
         self.assertEqual([(item['id'], item['name']) for item in restarted],
-                         [(codex['id'], '改過的名字'), (claude['id'], 'Claude Code')])
+                         [(codex['id'], '改過的名字'), (claude['id'], 'Claude Code'), (claude_api['id'], 'Claude（API）')])
 
     def test_all_deleted_stays_empty_after_restart(self):
         client = self.client()
@@ -94,12 +96,54 @@ class DefaultMembersTest(unittest.TestCase):
         connection.close()
         self.assertEqual(self.listed(self.client()), [])
 
+    def test_upgrade_fills_default_spending_cap_only_where_supported(self):
+        self.state.mkdir(mode=0o700)
+        path = db.database_path(self.state)
+        path.touch(mode=0o600)
+        connection = db.connect(path)
+        for version in range(7):  # 第 7 版：還沒有花費上限欄位
+            for statement in db.MIGRATIONS[version]:
+                connection.execute(statement)
+        connection.execute('PRAGMA user_version = 7')
+        rows = [('m-claude', 'claude_code', 'api_key'), ('m-codex', 'codex', 'api_key'),
+                ('m-grok-cli', 'grok', 'subscription_cli'), ('m-gone', 'retired', 'api_key')]
+        for number, (member_id, adapter, auth_mode) in enumerate(rows):
+            connection.execute("INSERT INTO requests VALUES (?, 'member_create', 'h', 'claimed', 1, 1, NULL)",
+                               (member_id,))
+            connection.execute('INSERT INTO members (id, adapter, name, model, effort, auth_mode, timeout, enabled,'
+                               " created, updated) VALUES (?, ?, ?, '', NULL, ?, 900, 1, ?, ?)",
+                               (member_id, adapter, member_id, auth_mode, number, number))
+        connection.commit()
+        connection.close()
+        prepare_database(self.state)
+        connection = db.connect(path)
+        try:
+            found = dict(connection.execute('SELECT id, max_budget_usd FROM members').fetchall())
+        finally:
+            connection.close()
+        # 升級不建預設成員；只有支援上限的既有成員補 1 美元，未登記的轉接器不動。
+        self.assertEqual(found, {'m-claude': 1.0, 'm-codex': None, 'm-grok-cli': None, 'm-gone': None})
+        prepare_database(self.state)  # 已是最新版：不再補值
+        connection = db.connect(path)
+        try:
+            connection.execute("UPDATE members SET max_budget_usd = NULL WHERE id = 'm-claude'")
+            connection.commit()
+        finally:
+            connection.close()
+        prepare_database(self.state)
+        connection = db.connect(path)
+        try:
+            self.assertIsNone(connection.execute("SELECT max_budget_usd FROM members WHERE id = 'm-claude'").fetchone()[0])
+        finally:
+            connection.close()
+
     def test_pair_command_creating_the_database_seeds_once(self):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(main(['pair'], {'YIQUNREN_STATE_DIR': str(self.state)}), 0)
-        self.assertEqual(self.count('members'), 3)
-        self.assertEqual([item['name'] for item in self.listed(self.client())], ['Codex', 'Grok', 'Claude Code'])
-        self.assertEqual(self.count('members'), 3)
+        self.assertEqual(self.count('members'), 4)
+        self.assertEqual([item['name'] for item in self.listed(self.client())],
+                         ['Codex', 'Grok', 'Claude Code', 'Claude（API）'])
+        self.assertEqual(self.count('members'), 4)
 
     def test_failure_while_seeding_undoes_the_whole_creation(self):
         def broken(connection):
@@ -117,8 +161,8 @@ class DefaultMembersTest(unittest.TestCase):
             connection.close()
         # 下次啟動重新建立，預設成員照樣建好。
         prepare_database(self.state)
-        self.assertEqual(self.count('members'), 3)
-        self.assertEqual(self.count('requests'), 3)
+        self.assertEqual(self.count('members'), 4)
+        self.assertEqual(self.count('requests'), 4)
 
     def test_adapter_without_api_key_mode_stops_creation(self):
         only_cli = adapters.Adapter(code='clionly', name='CLI Only', turn_fields=frozenset({'message'}),
@@ -140,7 +184,7 @@ class DefaultMembersTest(unittest.TestCase):
             rows = connection.execute('SELECT r.kind, r.state FROM members m JOIN requests r ON r.id = m.id').fetchall()
         finally:
             connection.close()
-        self.assertEqual([(row['kind'], row['state']) for row in rows], [('member_default', requests.CLAIMED)] * 3)
+        self.assertEqual([(row['kind'], row['state']) for row in rows], [('member_default', requests.CLAIMED)] * 4)
 
 
 if __name__ == '__main__':

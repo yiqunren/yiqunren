@@ -132,6 +132,46 @@ class MemberApiTest(unittest.TestCase):
         self.assertFalse(client.patch('/api/members/' + member['id'], json={'enabled': False}).json()['member']['enabled'])
         self.assertTrue(client.patch('/api/members/' + member['id'], json={'enabled': True}).json()['member']['enabled'])
 
+    def test_spending_cap_defaults_validates_and_clears(self):
+        client = self.client()
+        # 支援的（Claude Code、Claude（API）的 API key 模式）沒送就用預設 1 美元；送 null 表示不設上限。
+        for adapter in ('claude_code', 'claude_api'):
+            with self.subTest(adapter=adapter):
+                self.assertEqual(self.create(client, adapter=adapter)['max_budget_usd'], 1.0)
+                self.assertIsNone(self.create(client, adapter=adapter, max_budget_usd=None)['max_budget_usd'])
+                self.assertEqual(self.create(client, adapter=adapter, max_budget_usd=2.5)['max_budget_usd'], 2.5)
+        self.assertEqual(self.create(client, max_budget_usd=None)['max_budget_usd'], None)
+        self.assertIsNone(self.create(client)['max_budget_usd'])  # Codex 不支援，預設不設
+        seeded = self.listed(client)
+        for value in (0, 0.001, 100.01, 1.005, -1, '1', True, 'NaN'):
+            with self.subTest(value=value):
+                body = self.new(adapter='claude_api', max_budget_usd=value)
+                self.assertEqual(client.post('/api/members', json=body).status_code, 422)
+        self.assertEqual(client.post('/api/members', json=self.new(max_budget_usd=1)).status_code, 422)  # 不支援
+        self.assertEqual(self.listed(client), seeded)
+        member = self.create(client, adapter='claude_api')
+        path = '/api/members/' + member['id']
+        self.assertEqual(client.patch(path, json={'max_budget_usd': 0.01}).json()['member']['max_budget_usd'], 0.01)
+        self.assertEqual(client.patch(path, json={'max_budget_usd': 100}).json()['member']['max_budget_usd'], 100)
+        self.assertEqual(client.patch(path, json={'max_budget_usd': 0}).status_code, 422)
+        self.assertIsNone(client.patch(path, json={'max_budget_usd': None}).json()['member']['max_budget_usd'])
+        codex = self.create(client)
+        self.assertEqual(client.patch('/api/members/' + codex['id'], json={'max_budget_usd': 1}).status_code, 422)
+
+    def test_spending_cap_reaches_the_runner(self):
+        class Capturing(Runner):
+            seen = []
+
+            async def run(self, turn, hooks):
+                Capturing.seen.append(turn)
+                hooks.save('ok')
+
+        client = self.client(runner=Capturing())
+        member = self.create(client, adapter='claude_api', max_budget_usd=0.5)
+        body, _ = self.turn(client, member['id'])
+        read_events(client, body['request_id'])
+        self.assertEqual(Capturing.seen[-1].budget, 0.5)
+
     def test_invalid_updates_are_rejected_without_changes(self):
         client = self.client()
         member = self.create(client, adapter='claude_code')
@@ -207,11 +247,13 @@ class AdapterListTest(unittest.TestCase):
         self.assertEqual(self.listed(FakeRunner(steps=1, tick=0.01)), {
             'adapters': [
                 {'code': 'codex', 'name': 'Codex', 'auth_modes': ['api_key', 'subscription_cli'],
-                 'supports_model': True, 'supports_effort': True, 'available': True},
+                 'supports_model': True, 'supports_effort': True, 'budget_modes': [], 'available': True},
                 {'code': 'grok', 'name': 'Grok', 'auth_modes': ['api_key', 'subscription_cli'],
-                 'supports_model': True, 'supports_effort': True, 'available': True},
+                 'supports_model': True, 'supports_effort': True, 'budget_modes': [], 'available': True},
                 {'code': 'claude_code', 'name': 'Claude Code', 'auth_modes': ['api_key'],
-                 'supports_model': True, 'supports_effort': True, 'available': True},
+                 'supports_model': True, 'supports_effort': True, 'budget_modes': ['api_key'], 'available': True},
+                {'code': 'claude_api', 'name': 'Claude（API）', 'auth_modes': ['api_key'],
+                 'supports_model': True, 'supports_effort': True, 'budget_modes': ['api_key'], 'available': True},
             ],
             'terms_notice': TERMS_NOTICE,
         })
@@ -238,7 +280,7 @@ class AdapterListTest(unittest.TestCase):
                 self.assertEqual(list(listed), [*adapters.codes()])
                 self.assertEqual(listed['plainbot'], {'code': 'plainbot', 'name': 'Plain Bot', 'auth_modes': ['api_key'],
                                                       'supports_model': False, 'supports_effort': False,
-                                                      'available': True})
+                                                      'budget_modes': [], 'available': True})
                 self.assertEqual((listed['modebot']['supports_model'], listed['modebot']['supports_effort'],
                                   listed['modebot']['available']), (True, False, False))
                 for code, item in listed.items():
@@ -251,7 +293,7 @@ class AdapterListTest(unittest.TestCase):
                             201 if item['supports_effort'] else 422)
             with adapters.override(adapters.adapters()[1:]):  # 移除第一家
                 codes = [a['code'] for a in client.get('/api/adapters').json()['adapters']]
-                self.assertEqual(codes, ['grok', 'claude_code'])
+                self.assertEqual(codes, ['grok', 'claude_code', 'claude_api'])
 
     def test_requires_pairing(self):
         with PairedClient(create_app(self.settings, runner=FakeRunner(steps=1, tick=0.01)), pair=False) as client:

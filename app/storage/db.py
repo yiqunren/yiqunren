@@ -94,6 +94,10 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         # NFR-7：轉接器那一家的對話身分（例如 Claude Code 的 session ID），只在完成的回合存，供下一個回合續接。
         'ALTER TABLE turns ADD COLUMN provider_session TEXT',
     ),
+    (
+        # FR-1 單回合花費上限（美元）；NULL 表示不設上限。既有成員要不要補預設值由 on_upgrade 依登記處決定。
+        'ALTER TABLE members ADD COLUMN max_budget_usd REAL',
+    ),
 )
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -125,9 +129,11 @@ def schema_version(connection: sqlite3.Connection) -> int:
     return connection.execute('PRAGMA user_version').fetchone()[0]
 
 
-def migrate(connection: sqlite3.Connection, *, on_create=None) -> int:
+def migrate(connection: sqlite3.Connection, *, on_create=None, on_upgrade=None) -> int:
     """on_create(connection) 只在資料庫第一次建立（原本版本是 0）時、於建表的同一個交易裡呼叫；
-    它丟出例外時整個建立一起撤銷，下次再試。從舊版本升級時不呼叫。"""
+    它丟出例外時整個建立一起撤銷，下次再試。從舊版本升級時不呼叫。
+    on_upgrade(connection, previous) 只在從舊版本（1 以上、比目前舊）升級時、於同一個交易裡呼叫，
+    previous 是升級前的版本；它丟出例外時整個升級一起撤銷。"""
     connection.execute('BEGIN IMMEDIATE')
     try:
         current = schema_version(connection)
@@ -139,6 +145,8 @@ def migrate(connection: sqlite3.Connection, *, on_create=None) -> int:
             connection.execute('PRAGMA user_version = %d' % (version + 1))
         if current == 0 and on_create is not None:
             on_create(connection)
+        if 0 < current < SCHEMA_VERSION and on_upgrade is not None:
+            on_upgrade(connection, current)
         connection.execute('COMMIT')
     except BaseException:
         connection.execute('ROLLBACK')
@@ -163,9 +171,9 @@ def _check_private_file(path: Path) -> None:
         os.close(fd)
 
 
-def prepare(state_dir: Path, *, on_create=None) -> Path:
+def prepare(state_dir: Path, *, on_create=None, on_upgrade=None) -> Path:
     """建立或升級資料庫，回傳資料庫路徑。失敗時丟 StorageError，不默默改用其他位置。
-    on_create 見 migrate：只在第一次建立時呼叫（例如建立預設成員）。"""
+    on_create、on_upgrade 見 migrate：第一次建立時呼叫前者（例如建立預設成員），從舊版本升級時呼叫後者。"""
     state_dir = Path(state_dir)
     if not state_dir.is_absolute():
         raise StorageError('狀態目錄必須是絕對路徑')
@@ -178,7 +186,7 @@ def prepare(state_dir: Path, *, on_create=None) -> Path:
             mode = connection.execute('PRAGMA journal_mode=WAL').fetchone()[0]
             if mode != 'wal':
                 raise StorageError('無法啟用 WAL 模式')
-            migrate(connection, on_create=on_create)
+            migrate(connection, on_create=on_create, on_upgrade=on_upgrade)
         finally:
             connection.close()
     except StorageError:

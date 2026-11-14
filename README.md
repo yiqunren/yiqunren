@@ -10,7 +10,7 @@
 
 **早期開發中，還不能給一般使用者使用。**
 
-目前有核心的協定、資料驗證、本機元件與後端 API，以及對應的測試。網頁介面有配對、成員設定與私聊三個畫面，群聊還沒做；沒有安裝包。各家 AI CLI 的橋接程式目前只有 Claude Code（API key 模式），Codex 與 Grok 還沒完成。
+目前有核心的協定、資料驗證、本機元件與後端 API，以及對應的測試。網頁介面有配對、成員設定與私聊三個畫面，群聊還沒做；沒有安裝包。能實際對話的轉接器目前有 Claude（API）（後端直接呼叫 Anthropic API，只做對話）與 Claude Code 橋接（API key 模式）；Codex 與 Grok 還沒完成。
 
 ## 想做到什麼
 
@@ -31,7 +31,7 @@ MVP 先接 Codex 與 Grok；Claude Code 是第三家，先做 API key 模式。�
 
 ## 目前已有的元件
 
-- **轉接器登記處**：唯一列出「有哪些 AI」的地方。預設登記 Codex、Grok、Claude Code；新增或移除一家只改這裡。
+- **轉接器登記處**：唯一列出「有哪些 AI」的地方。預設登記 Codex、Grok、Claude Code、Claude（API）；新增或移除一家只改這裡。
 - **回合協定**：送給一位成員的一次請求，涵蓋開始、查回、中斷與「未知」狀態。
 - **群聊協定**：發言順序、發言上限（預設 2N+3 次，N 是參與成員數）與主持人選擇。
 - **工作區寫入權**：同一範圍同時只允許一個成員寫入；無法確認程序是否停止時持續擋住，等你手動解除。
@@ -83,7 +83,7 @@ npm test                  # 元件測試，不連網路、不需要後端
 npm run build             # 型別檢查，並打包到 ../app/web/static/
 ```
 
-打包後啟動後端，用瀏覽器開 `http://127.0.0.1:8420/`，輸入配對碼就能使用。狀態資料庫第一次建立時，會替每個轉接器（Codex、Grok、Claude Code）各建一位預設成員（API key 模式、模型用該家預設），配對後可以直接私聊；之後可以在成員畫面修改或刪除，刪掉的不會再自動建回來。已經存在的資料庫不會補建。沒打包時，`/` 會回 404 並說明要先打包。
+打包後啟動後端，用瀏覽器開 `http://127.0.0.1:8420/`，輸入配對碼就能使用。狀態資料庫第一次建立時，會替每個轉接器（Codex、Grok、Claude Code、Claude（API））各建一位預設成員（API key 模式、模型用該家預設；支援花費上限的設 1 美元），配對後可以直接私聊；之後可以在成員畫面修改或刪除，刪掉的不會再自動建回來。已經存在的資料庫不會補建（例如之前建立的資料庫不會多出 Claude（API）成員，要自己在成員畫面新增）。沒打包時，`/` 會回 404 並說明要先打包。
 
 開發網頁介面時可以用 Vite 開發伺服器，改完程式畫面會立即更新：先啟動後端，再到 `frontend/` 執行 `npm run dev`，用瀏覽器開 `http://127.0.0.1:5173/`。開發伺服器把 `/api` 轉給後端，轉送時把 `Host` 與 `Origin` 改成後端的位址，所以後端的安全檢查不必放寬。這個改寫只寫在開發設定 `frontend/vite.config.ts` 裡，打包後的正式版不經過它。
 
@@ -102,10 +102,10 @@ npm run build             # 型別檢查，並打包到 ../app/web/static/
 - `POST /api/pair`：用配對碼換 Cookie，內容是 JSON：`code`（大小寫、連字號都可以）。配對碼不對或已失效回 403；輸錯 5 次就作廢，要重新產生。
 - `GET /api/session`：查這個瀏覽器是否已配對，回傳 `{"paired": true}` 或 `false`。
 - `DELETE /api/session`：登出這個瀏覽器，只撤銷它自己，其他已配對的瀏覽器不受影響。
-- `GET /api/adapters`：列出新增成員時可選的轉接器，依登記順序：`code`、`name`、`auth_modes`（支援的認證模式）、`supports_model`、`supports_effort`（能不能指定模型、推理強度），以及 `available`（伺服器目前有沒有這家的執行者；沒有時送出回合會回 503，但有也不代表該家 CLI 已安裝或已登入）。`terms_notice` 是選訂閱 CLI 模式時要顯示的提示。
-- `POST /api/members`：新增一位成員（你設定的一位 AI 參與者），內容是 JSON：`request_id`（前端產生的 UUID，也是之後的成員 ID）、`adapter`（轉接器代號，例如 `codex`）、`name`、`auth_mode`（`api_key` 或 `subscription_cli`，要是該轉接器支援的），可選 `model`（空白表示用該家預設）、`effort`（推理強度，該轉接器支援時才能設）、`timeout_minutes`（單回合逾時，1～60 分鐘，預設 15）。同一個 `request_id` 重送回傳原本的成員。選訂閱 CLI 模式時，回傳的 `terms_notice` 會帶服務條款提示。模型目前只存文字，還不比對各家的模型清單。
+- `GET /api/adapters`：列出新增成員時可選的轉接器，依登記順序：`code`、`name`、`auth_modes`（支援的認證模式）、`supports_model`、`supports_effort`（能不能指定模型、推理強度）、`budget_modes`（能設定單回合花費上限的認證模式），以及 `available`（伺服器目前有沒有這家的執行者；沒有時送出回合會回 503，但有也不代表該家 CLI 已安裝或已登入）。`terms_notice` 是選訂閱 CLI 模式時要顯示的提示。
+- `POST /api/members`：新增一位成員（你設定的一位 AI 參與者），內容是 JSON：`request_id`（前端產生的 UUID，也是之後的成員 ID）、`adapter`（轉接器代號，例如 `codex`）、`name`、`auth_mode`（`api_key` 或 `subscription_cli`，要是該轉接器支援的），可選 `model`（空白表示用該家預設）、`effort`（推理強度，該轉接器支援時才能設）、`timeout_minutes`（單回合逾時，1～60 分鐘，預設 15）、`max_budget_usd`（單回合花費上限，0.01～100 美元、最多兩位小數；只有 `budget_modes` 列出的認證模式能設，沒送時用預設 1 美元，送 `null` 表示不設上限）。同一個 `request_id` 重送回傳原本的成員。選訂閱 CLI 模式時，回傳的 `terms_notice` 會帶服務條款提示。模型目前只存文字，還不比對各家的模型清單。
 - `GET /api/members`、`GET /api/members/{id}`：列出成員或查一位，含狀態 `status`：`running`（有進行中回合）、`needs_review`（最近一個回合是「未知」，需要你核對）、`idle`。
-- `PATCH /api/members/{id}`：只送要改的欄位：`name`、`model`、`effort`（送 `null` 清除）、`auth_mode`、`timeout_minutes`、`enabled`（`false` 是停用：設定保留、不能送新回合，已經在跑的回合不受影響）。轉接器不能改，要換就新增另一位成員。
+- `PATCH /api/members/{id}`：只送要改的欄位：`name`、`model`、`effort`（送 `null` 清除）、`auth_mode`、`timeout_minutes`、`max_budget_usd`（送 `null` 表示不設上限）、`enabled`（`false` 是停用：設定保留、不能送新回合，已經在跑的回合不受影響）。轉接器不能改，要換就新增另一位成員。
 - `DELETE /api/members/{id}`：刪除成員設定；過去的對話照樣保留，回合上記著當時的成員名稱。還有進行中回合時回 409。
 - `POST /api/turns`：送出一個私聊回合，內容是 JSON：`request_id`、`conversation_id`（都是前端產生的 UUID）、`member`（成員 ID）、`text`。成員不存在回 422、已停用回 409；回合使用該成員的轉接器、模型、推理強度、認證模式與逾時。同一個 `request_id` 重送會回傳原本的回合，不會重複執行；同一段對話同時只能有一個進行中的回合。一段對話只屬於一位成員（第一個回合的成員），換成別的成員送會回 409。
 - `POST /api/turns/{id}/interrupt`：把中斷要求交給轉接器，送達後回 202，SSE 會先送一個 `stopping`（中斷中）事件。結果由 SSE 的結束事件告知：轉接器確認程序已停止才是「已中斷」，無法確認時是「未知」。回合已結束時回 409；要求沒有送達轉接器時回 502，回合可能仍在執行。
@@ -127,12 +127,32 @@ npm run build             # 型別檢查，並打包到 ../app/web/static/
 | `YIQUNREN_PORT` | 監聽的埠 | `8420` |
 | `YIQUNREN_STATE_DIR` | 狀態資料庫目錄（絕對路徑，權限必須是 0700） | `~/.local/state/yiqunren` |
 | `YIQUNREN_FAKE_TURNS` | 設成 `1` 時，私聊回合改由假轉接器回覆（只供開發） | `0` |
-| `YIQUNREN_BRIDGES` | 要接上的轉接器橋接，逗號分隔的轉接器代號；目前只有 `claude_code` 有橋接。不能和 `YIQUNREN_FAKE_TURNS=1` 同時設 | 不接任何橋接 |
+| `YIQUNREN_BRIDGES` | 要接上的轉接器，逗號分隔的轉接器代號；目前可用 `claude_api`（後端直接呼叫，不需要橋接）與 `claude_code`（要另外啟動橋接）。不能和 `YIQUNREN_FAKE_TURNS=1` 同時設 | 不接任何轉接器 |
 | `YIQUNREN_WRITE_REGISTRY` | 寫入權登記庫的檔案路徑（絕對路徑，不能經符號連結，所在目錄權限必須是 0700）；空字串視同沒設 | 狀態目錄裡的 `write-ownership.sqlite3` |
 
 寫入權登記庫記錄哪個成員正在寫哪個專案範圍（同一範圍同時只允許一個成員寫入，見 `docs/SPEC.md` 的 NFR-2），預設和狀態資料庫放在同一個目錄，不放在 repo 底下。目前只有橋接的回合管理（`scripts/turn_host.py`）和命令列工具 `scripts/write_ownership.py` 會用到，後端還沒有接上。找不到狀態目錄（例如沒有家目錄、也沒設 `YIQUNREN_STATE_DIR`）時，寫入權工具會回報錯誤並禁止開始寫入。
 
 資料庫與登記庫建議放在 Linux 檔案系統上；放在 WSL 的 `/mnt/*` 底下會變慢，也不要讓 Windows 端的程式同時開這些檔。
+
+### Claude（API）
+
+後端用 Anthropic 官方 Python SDK（`anthropic`）直接呼叫 Messages API，不需要另外啟動程序。每一回合都會用你的 API key 呼叫 Anthropic，費用由你支付。
+
+```bash
+# 在 repo 根目錄；ANTHROPIC_API_KEY 由你自己在啟動後端的環境設定
+YIQUNREN_BRIDGES=claude_api .venv/bin/python -m app.web
+```
+
+- 沒有設定 `ANTHROPIC_API_KEY` 時後端拒絕啟動。後端只檢查 key 有沒有設，不讀出、不儲存、不記錄它的值。
+- 只做對話：不給模型任何工具，不讀寫檔案，也沒有工作目錄。同一段對話先前完成的回合會當成前文一起送出（用 prompt caching 降低重複前文的費用）。
+- 成員的模型空白時用 `claude-opus-5-5`；推理強度有設定才交給 API。
+- 花費上限：送出前先計算輸入的 token 數，依內建價格表把剩下的預算換算成這次最多能輸出的 token 數，所以單回合不會超過上限。預算不夠（能輸出的不到 1,024 個 token）就不送出；回覆因此被截斷時是「失敗（超過花費上限）」，截斷的內容不存。設了上限而模型不在價格表裡時是「失敗（模型不存在或不支援）」。
+- 失敗只顯示固定原因：認證失敗、額度不足、該家服務忙碌、模型不存在或不支援、模型拒絕回答、超過花費上限、逾時、回覆過長、內部錯誤。錯誤訊息原文不顯示也不存，log 只記原因與 Anthropic 的請求 ID。
+- 按「中斷」會取消進行中的請求，已經產生的用量照樣計費。伺服器重新啟動時，進行中的回合無法取回，標為「未知」。
+
+| 環境變數（後端） | 用途 | 預設 |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | 你的 Anthropic API key（接上 `claude_api` 時必填） | 無 |
 
 ### Claude Code 橋接（API key 模式）
 
@@ -150,7 +170,7 @@ YIQUNREN_BRIDGES=claude_code .venv/bin/python -m app.web
 - 每段對話有自己的空白工作目錄（狀態目錄底下的 `workspaces/<對話 ID>`），刪除對話時一併刪除。Claude Code 可以在裡面建立、修改檔案，不能執行任何指令，也不能讀寫工作目錄以外的檔案。
 - 同一段對話的下一個回合會接續最近一個完成的回合在 Claude Code 裡的對話。
 - 回合失敗時，畫面只顯示固定訊息與診斷 ID，詳細內容寫在本機的診斷檔（遮罩後的 stderr 尾段與事件類型，不含回覆正文）。
-- 目前不設單回合的花費上限。
+- 成員設了單回合花費上限時，交給 CLI 執行（`--max-budget-usd`）；超過上限時目前記為「內部錯誤」。
 - 橋接和後端要用同一個狀態目錄（`YIQUNREN_STATE_DIR` 或預設位置）。
 
 | 環境變數（橋接） | 用途 | 預設 |
@@ -176,4 +196,4 @@ YIQUNREN_BRIDGES=claude_code .venv/bin/python -m app.web
 
 以 [Apache License 2.0](LICENSE) 授權。「Yiqunren」與「議群人」的名稱與商標不隨 Apache-2.0 授權給他人。
 
-Codex、Grok、Claude Code 分別是 OpenAI、xAI、Anthropic 的產品名稱或商標。本專案與這些公司沒有關聯，也沒有獲得它們的背書。
+Codex、Grok、Claude 與 Claude Code 分別是 OpenAI、xAI、Anthropic 的產品名稱或商標。本專案與這些公司沒有關聯，也沒有獲得它們的背書。

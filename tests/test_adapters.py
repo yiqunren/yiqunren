@@ -28,12 +28,21 @@ def make_adapter(code="testbot", **changes):
     return adapters.Adapter(**{**base, **changes})
 
 
+# 新增／移除轉接器的測試以這三家為底（測試專用的登記資料，SPEC NFR-7 驗收條件允許），
+# 預設登記之後再加轉接器時，這些斷言不必跟著改。
+BASE_CODES = ("codex", "grok", "claude_code")
+
+
+def base_entries():
+    return tuple(adapters.get(code) for code in BASE_CODES)
+
+
 def with_testbot(**changes):
-    return adapters.override((*adapters.adapters(), make_adapter(**changes)))
+    return adapters.override((*base_entries(), make_adapter(**changes)))
 
 
 def without(code):
-    return adapters.override(tuple(entry for entry in adapters.adapters() if entry.code != code))
+    return adapters.override(tuple(entry for entry in base_entries() if entry.code != code))
 
 
 def snapshot(codes):
@@ -83,14 +92,17 @@ def diag(provider, root):
 # ---- 預設登記 ----
 
 def test_default_registry_follows_spec():
-    assert adapters.codes() == ("codex", "grok", "claude_code")
-    assert [entry.name for entry in adapters.adapters()] == ["Codex", "Grok", "Claude Code"]
+    assert adapters.codes() == ("codex", "grok", "claude_code", "claude_api")
+    assert [entry.name for entry in adapters.adapters()] == ["Codex", "Grok", "Claude Code", "Claude（API）"]
     assert adapters.get("codex").auth_modes == ("api_key", "subscription_cli")
     assert adapters.get("grok").auth_modes == ("api_key", "subscription_cli")
     assert adapters.get("claude_code").auth_modes == ("api_key",)
+    assert adapters.get("claude_api").auth_modes == ("api_key",)
+    # Claude（API）只做對話：沒有工作目錄與續接欄位，也不能主持。
+    assert adapters.get("claude_api").fields_for("api_key") == frozenset({"message", "model", "effort", "max_budget_usd"})
     assert dc.host_candidates() == ("codex", "claude_code")
     assert {entry.code: entry.error_class_rule for entry in adapters.adapters()} == {
-        "codex": None, "grok": None, "claude_code": "claude_events"}
+        "codex": None, "grok": None, "claude_code": "claude_events", "claude_api": None}
 
 
 def test_api_key_mode_is_not_registered_as_a_separate_adapter():

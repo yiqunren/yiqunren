@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { describe, expect, it, vi } from 'vitest'
 
 import { MembersScreen } from './MembersScreen'
-import { type Call, fakeBackend, member, TERMS } from './test-server'
+import { ADAPTERS, type Call, fakeBackend, member, TERMS } from './test-server'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const OFFLINE = '連不上伺服器，請確認後端還在執行。'
@@ -235,6 +235,76 @@ describe('新增成員', () => {
     fireEvent.submit(form())
     expect((await screen.findByRole('alert')).textContent).toBe('這個轉接器不支援這種認證模式')
     expect(form()).toBeTruthy()
+  })
+})
+
+describe('單回合花費上限', () => {
+  const capped = { code: 'cappy', name: 'Cappy', auth_modes: ['api_key'], supports_model: true, supports_effort: true, budget_modes: ['api_key'], available: true }
+  const adapters = [...ADAPTERS, capped]
+
+  it('清單顯示上限；不支援的顯示不適用', async () => {
+    fakeBackend({
+      adapters,
+      members: [
+        member({ id: 'b1', name: '有上限', adapter: 'cappy', adapter_name: 'Cappy', max_budget_usd: 2.5 }),
+        member({ id: 'b2', name: '沒上限', adapter: 'cappy', adapter_name: 'Cappy', max_budget_usd: null }),
+        member({ id: 'b3', name: '不支援', adapter: 'codex', adapter_name: 'Codex' }),
+      ],
+    })
+    show()
+    await screen.findByText('有上限')
+    expect(row('有上限').getByText('US$2.50')).toBeTruthy()
+    expect(row('沒上限').getByText('不設上限')).toBeTruthy()
+    expect(row('不支援').getByText('不適用')).toBeTruthy()
+  })
+
+  it('支援的轉接器預設 1 美元，空白表示不設上限，格式不對不送出', async () => {
+    const { calls } = fakeBackend({ adapters })
+    show()
+    await openNewForm()
+    expect(screen.queryByLabelText('單回合花費上限（美元）')).toBeNull() // Codex 不支援
+    fill('轉接器', 'cappy')
+    expect(screen.getByLabelText<HTMLInputElement>('單回合花費上限（美元）').value).toBe('1')
+    fill('顯示名稱', '甲')
+    for (const value of ['0', '0.001', '100.01', '-1', 'abc', '1.']) {
+      fill('單回合花費上限（美元）', value)
+      fireEvent.submit(form())
+      expect((await screen.findByRole('alert')).textContent).toContain('單回合花費上限要填 0.01 到 100')
+    }
+    expect(sent(calls, 'POST')).toHaveLength(0)
+    fill('單回合花費上限（美元）', '0.5')
+    fireEvent.submit(form())
+    await screen.findByText('甲')
+    expect(sent(calls, 'POST')[0].body).toMatchObject({ adapter: 'cappy', max_budget_usd: 0.5 })
+
+    await openNewForm()
+    fill('轉接器', 'cappy')
+    fill('顯示名稱', '乙')
+    fill('單回合花費上限（美元）', '')
+    fireEvent.submit(form())
+    await screen.findByText('乙')
+    expect(sent(calls, 'POST')[1].body).toMatchObject({ adapter: 'cappy', max_budget_usd: null })
+  })
+
+  it('修改時只在上限有改才送出；清空表示不設上限', async () => {
+    const { calls } = fakeBackend({
+      adapters,
+      members: [member({ id: 'b1', name: '有上限', adapter: 'cappy', adapter_name: 'Cappy', max_budget_usd: 1 })],
+    })
+    show()
+    await screen.findByText('有上限')
+    fireEvent.click(row('有上限').getByRole('button', { name: '修改' }))
+    expect(screen.getByLabelText<HTMLInputElement>('單回合花費上限（美元）').value).toBe('1')
+    fill('顯示名稱', '改名')
+    fireEvent.submit(form())
+    await screen.findByText('改名')
+    expect(sent(calls, 'PATCH')[0].body).toEqual({ name: '改名' })
+    fireEvent.click(row('改名').getByRole('button', { name: '修改' }))
+    fill('單回合花費上限（美元）', '')
+    fireEvent.submit(form())
+    await waitFor(() => expect(sent(calls, 'PATCH')).toHaveLength(2))
+    expect(sent(calls, 'PATCH')[1].body).toEqual({ max_budget_usd: null })
+    await waitFor(() => expect(row('改名').getByText('不設上限')).toBeTruthy())
   })
 })
 

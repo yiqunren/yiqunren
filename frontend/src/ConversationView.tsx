@@ -7,6 +7,12 @@ import { watchTurn } from './turn-events'
 
 // 失敗的固定分類（後端只會給這幾種）；不顯示原始錯誤全文。
 const ERROR_LABELS: Record<string, string> = {
+  auth_failed: '認證失敗（請確認啟動後端時設定的 API key 有效）',
+  quota_exceeded: '額度不足（該家帳戶的額度或餘額不夠）',
+  service_busy: '該家服務忙碌（太頻繁或暫時出錯，稍後再試）',
+  model_unavailable: '模型不存在或不支援（請檢查成員設定的模型名稱）',
+  refused: '模型拒絕回答',
+  budget_exceeded: '超過花費上限（這位成員的單回合花費上限不夠，回覆沒有保存）',
   timeout: '逾時（超過這位成員的單回合時間上限）',
   reply_too_long: '回覆過長（超過長度上限，回覆沒有保存）',
   internal_error: '內部錯誤',

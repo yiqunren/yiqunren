@@ -6,6 +6,7 @@ license = "Apache-2.0"
 requires-python = ">=3.12"
 # 只裝 fastapi，不裝 fastapi[standard]；內建遙測在程式裡明確關閉（SPEC 第 7 節第 5 項、NFR-4）。
 dependencies = [
+    "anthropic>=2.8.0",
     "fastapi>=0.162.5,<0.163",
     "uvicorn>=0.54.0",
 ]

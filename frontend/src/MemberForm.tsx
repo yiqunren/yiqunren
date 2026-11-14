@@ -8,6 +8,21 @@ export function authModeLabel(mode: string): string {
   return AUTH_MODE_LABELS[mode] ?? mode
 }
 
+const BUDGET_DEFAULT_USD = 1
+
+/** 空白是 null（不設上限）；格式不對回傳 undefined。FR-1：0.01～100 美元，最多兩位小數。 */
+function parseBudget(text: string): number | null | undefined {
+  const value = text.trim()
+  if (value === '') {
+    return null
+  }
+  if (!/^\d+(\.\d{1,2})?$/.test(value)) {
+    return undefined
+  }
+  const amount = Number(value)
+  return amount >= 0.01 && amount <= 100 ? amount : undefined
+}
+
 interface Props {
   adapters: api.Adapter[]
   termsNotice: string
@@ -26,6 +41,10 @@ export function MemberForm({ adapters, termsNotice, member, onSaved, onCancel, o
   const [model, setModel] = useState(member?.model ?? '')
   const [effort, setEffort] = useState(member?.effort ?? '')
   const [timeout, setTimeoutMinutes] = useState(String(member?.timeout_minutes ?? 15))
+  // FR-1：新增時預設 1 美元；空白表示不設上限。
+  const [budget, setBudget] = useState(
+    member === null ? String(BUDGET_DEFAULT_USD) : member.max_budget_usd === null ? '' : String(member.max_budget_usd),
+  )
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   // NFR-1：同樣的內容重送要用同一個請求 ID（例如網路中斷後再按一次）；內容改了才換新的。
@@ -42,6 +61,7 @@ export function MemberForm({ adapters, termsNotice, member, onSaved, onCancel, o
     )
   }
   const current = adapter
+  const budgetSupported = current.budget_modes.includes(authMode)
 
   function changeAdapter(code: string) {
     const next = adapters.find((item) => item.code === code)
@@ -67,12 +87,21 @@ export function MemberForm({ adapters, termsNotice, member, onSaved, onCancel, o
       setError('單回合逾時要填 1 到 60 的整數（分鐘）。')
       return
     }
+    // 不支援花費上限時不送這個欄位；修改時若原本有值就清除（後端要求空白）。
+    const maxBudget = budgetSupported ? parseBudget(budget) : null
+    if (maxBudget === undefined) {
+      setError('單回合花費上限要填 0.01 到 100 的金額（美元，最多兩位小數），或留空表示不設上限。')
+      return
+    }
     const settings: api.MemberSettings = {
       name: name.trim(),
       model: current.supports_model ? model.trim() : '',
       effort: current.supports_effort && effort.trim() !== '' ? effort.trim() : null,
       auth_mode: authMode,
       timeout_minutes: minutes,
+    }
+    if (budgetSupported) {
+      settings.max_budget_usd = maxBudget
     }
     if (settings.name === '') {
       setError('請填顯示名稱。')
@@ -95,6 +124,7 @@ export function MemberForm({ adapters, termsNotice, member, onSaved, onCancel, o
         if (settings.effort !== member.effort) changes.effort = settings.effort
         if (settings.auth_mode !== member.auth_mode) changes.auth_mode = settings.auth_mode
         if (settings.timeout_minutes !== member.timeout_minutes) changes.timeout_minutes = settings.timeout_minutes
+        if (maxBudget !== member.max_budget_usd) changes.max_budget_usd = maxBudget
         if (Object.keys(changes).length > 0) {
           await api.updateMember(member.id, changes)
         }
@@ -188,6 +218,19 @@ export function MemberForm({ adapters, termsNotice, member, onSaved, onCancel, o
             required
           />
         </label>
+        {budgetSupported && (
+          <label>
+            單回合花費上限（美元）
+            <input
+              inputMode="decimal"
+              value={budget}
+              onChange={(event) => setBudget(event.target.value)}
+              placeholder="空白表示不設上限"
+              maxLength={6}
+              spellCheck={false}
+            />
+          </label>
+        )}
         <div className="actions">
           <button type="submit" disabled={busy}>
             {member === null ? '新增成員' : '儲存'}

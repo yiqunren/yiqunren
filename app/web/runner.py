@@ -60,6 +60,10 @@ class TurnInput:
     session: str | None = None
     # 這段對話的工作目錄（絕對路徑，NFR-7）；需要的轉接器自己建立，系統在刪除對話時刪除。
     workspace: str = ''
+    # 這段對話先前完成的回合（擁有者的訊息, 成員的回覆），依時間順序；給自己帶前文的轉接器用（NFR-7）。
+    history: tuple = ()
+    # 成員的單回合花費上限（美元，FR-1）；None 表示不設上限。
+    budget: float | None = None
 
 
 @dataclass(frozen=True)

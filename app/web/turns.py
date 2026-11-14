@@ -167,6 +167,7 @@ class TurnService:
                                  member_name=member['name'], adapter=member['adapter'])
             picked['member'] = member
             picked['session'] = turns.latest_session(connection, body.conversation_id)
+            picked['history'] = turns.completed_exchanges(connection, body.conversation_id)
 
         connection = self._connect()
         try:
@@ -193,7 +194,8 @@ class TurnService:
                              self.timeout if self.timeout is not None else member['timeout'],
                              adapter=member['adapter'], model=member['model'], effort=member['effort'],
                              auth_mode=member['auth_mode'], session=picked['session'],
-                             workspace=str(workspaces.path(self.state_dir, body.conversation_id)))
+                             workspace=str(workspaces.path(self.state_dir, body.conversation_id)),
+                             history=picked['history'], budget=member['max_budget_usd'])
             runner = self.runner_for(member['adapter'])
             self._spawn(body.request_id, lambda hooks: runner.run(turn, hooks))
             return 202, {'turn': snapshot(row)}

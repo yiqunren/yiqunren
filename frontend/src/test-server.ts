@@ -24,8 +24,8 @@ export const TERMS = '使用時須遵守該家的服務條款，由擁有者自�
 export const GOOD_CODE = 'ABCD-EFGH'
 
 export const ADAPTERS: Adapter[] = [
-  { code: 'codex', name: 'Codex', auth_modes: ['api_key', 'subscription_cli'], supports_model: true, supports_effort: true, available: true },
-  { code: 'plainbot', name: 'Plain Bot', auth_modes: ['api_key'], supports_model: false, supports_effort: false, available: false },
+  { code: 'codex', name: 'Codex', auth_modes: ['api_key', 'subscription_cli'], supports_model: true, supports_effort: true, budget_modes: [], available: true },
+  { code: 'plainbot', name: 'Plain Bot', auth_modes: ['api_key'], supports_model: false, supports_effort: false, budget_modes: [], available: false },
 ]
 
 export function member(overrides: Partial<Member> = {}): Member {
@@ -38,6 +38,7 @@ export function member(overrides: Partial<Member> = {}): Member {
     effort: null,
     auth_mode: 'api_key',
     timeout_minutes: 15,
+    max_budget_usd: null,
     enabled: true,
     status: 'idle',
     ...overrides,
@@ -180,6 +181,13 @@ export function fakeBackend(options: BackendOptions = {}) {
         effort: (body.effort as string | null) ?? null,
         auth_mode: String(body.auth_mode),
         timeout_minutes: Number(body.timeout_minutes),
+        // 沒送時：支援的用預設 1 美元（和真後端一樣）。
+        max_budget_usd:
+          'max_budget_usd' in body
+            ? (body.max_budget_usd as number | null)
+            : adapter?.budget_modes.includes(String(body.auth_mode))
+              ? 1
+              : null,
       })
       state.members.push(created)
       return { status: 201, body: { member: created } }

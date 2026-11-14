@@ -10,6 +10,14 @@ const STATUS_LABELS: Record<api.MemberStatus, string> = {
   needs_review: '需要人核對',
 }
 
+// FR-1：單回合花費上限；轉接器在這種認證模式下不支援時顯示「不適用」。
+function budgetLabel(member: api.Member, adapter: api.Adapter | undefined): string {
+  if (member.max_budget_usd !== null) {
+    return `US$${member.max_budget_usd.toFixed(2)}`
+  }
+  return adapter?.budget_modes.includes(member.auth_mode) ? '不設上限' : '不適用'
+}
+
 export function MembersScreen({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [adapters, setAdapters] = useState<api.AdapterList | null>(null)
   const [members, setMembers] = useState<api.Member[] | null>(null)
@@ -125,6 +133,7 @@ export function MembersScreen({ onUnauthorized }: { onUnauthorized: () => void }
               <th>推理強度</th>
               <th>認證模式</th>
               <th>逾時</th>
+              <th>花費上限</th>
               <th>狀態</th>
               <th>動作</th>
             </tr>
@@ -143,6 +152,7 @@ export function MembersScreen({ onUnauthorized }: { onUnauthorized: () => void }
                   <td>{member.effort ?? '不指定'}</td>
                   <td>{authModeLabel(member.auth_mode)}</td>
                   <td>{member.timeout_minutes} 分鐘</td>
+                  <td>{budgetLabel(member, adapter)}</td>
                   <td>
                     <span className={`status status-${member.status}`}>{STATUS_LABELS[member.status]}</span>
                     {!member.enabled && <span className="tag">已停用</span>}

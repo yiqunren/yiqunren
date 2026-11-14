@@ -14,7 +14,7 @@ IDLE = 'idle'
 RUNNING = 'running'
 NEEDS_REVIEW = 'needs_review'
 
-EDITABLE = frozenset({'name', 'model', 'effort', 'auth_mode', 'timeout', 'enabled'})
+EDITABLE = frozenset({'name', 'model', 'effort', 'auth_mode', 'timeout', 'enabled', 'max_budget_usd'})
 
 
 class MemberBusy(RuntimeError):
@@ -22,11 +22,12 @@ class MemberBusy(RuntimeError):
 
 
 def insert(connection: sqlite3.Connection, member_id: str, *, adapter: str, name: str, model: str,
-           effort: str | None, auth_mode: str, timeout: int, now: float) -> None:
-    """必須在呼叫者的交易裡執行（requests.claim 的 on_claim）。"""
+           effort: str | None, auth_mode: str, timeout: int, now: float,
+           max_budget_usd: float | None = None) -> None:
+    """必須在呼叫者的交易裡執行（requests.claim 的 on_claim）。max_budget_usd 是 None 表示不設花費上限。"""
     connection.execute('INSERT INTO members (id, adapter, name, model, effort, auth_mode, timeout, enabled,'
-                       ' created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)',
-                       (member_id, adapter, name, model, effort, auth_mode, timeout, now, now))
+                       ' created, updated, max_budget_usd) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)',
+                       (member_id, adapter, name, model, effort, auth_mode, timeout, now, now, max_budget_usd))
 
 
 def get(connection: sqlite3.Connection, member_id: str) -> sqlite3.Row | None:

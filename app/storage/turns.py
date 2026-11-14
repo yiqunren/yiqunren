@@ -17,11 +17,18 @@ INTERRUPTED = 'interrupted'
 UNKNOWN = 'unknown'
 FINAL_STATES = frozenset({COMPLETED, FAILED, INTERRUPTED, UNKNOWN})
 
-# 失敗原因的固定分類；接上真的轉接器時再加（例如額度不足、認證失敗、逾時）。
+# 失敗原因的固定分類（FR-2）；轉接器分不出來的一律是 internal_error。
 INTERNAL_ERROR = 'internal_error'
 TIMEOUT = 'timeout'  # 超過單回合逾時，且已確認程序停止
 REPLY_TOO_LONG = 'reply_too_long'  # 回覆超過長度上限，回覆不存（FR-2）
-ERROR_KINDS = frozenset({INTERNAL_ERROR, TIMEOUT, REPLY_TOO_LONG})
+AUTH_FAILED = 'auth_failed'  # 認證失敗（例如 API key 無效或沒有權限）
+QUOTA_EXCEEDED = 'quota_exceeded'  # 該家帳戶額度不足
+SERVICE_BUSY = 'service_busy'  # 該家服務忙碌：太頻繁或暫時出錯
+MODEL_UNAVAILABLE = 'model_unavailable'  # 模型不存在或不支援
+REFUSED = 'refused'  # 模型拒絕回答
+BUDGET_EXCEEDED = 'budget_exceeded'  # 超過成員的單回合花費上限（FR-1）
+ERROR_KINDS = frozenset({INTERNAL_ERROR, TIMEOUT, REPLY_TOO_LONG, AUTH_FAILED, QUOTA_EXCEEDED, SERVICE_BUSY,
+                         MODEL_UNAVAILABLE, REFUSED, BUDGET_EXCEEDED})
 
 PROGRESS = 'progress'
 STOPPING = 'stopping'  # 中斷要求已送達轉接器，等它確認程序停止
@@ -66,6 +73,15 @@ def get(connection: sqlite3.Connection, turn_id: str) -> sqlite3.Row | None:
 def conversation(connection: sqlite3.Connection, conversation_id: str) -> list[sqlite3.Row]:
     return connection.execute('SELECT * FROM turns WHERE conversation_id = ? ORDER BY started, rowid',
                               (conversation_id,)).fetchall()
+
+
+def completed_exchanges(connection: sqlite3.Connection, conversation_id: str) -> tuple[tuple[str, str], ...]:
+    """這段對話裡完成的回合（擁有者的訊息, 成員的回覆），依時間順序；給自己帶前文的轉接器用（NFR-7）。
+    失敗、已中斷、未知的回合不算；沒存訊息的舊回合（第 2 版之前）也略過。"""
+    rows = connection.execute('SELECT message, reply FROM turns WHERE conversation_id = ? AND state = ?'
+                              ' AND message IS NOT NULL AND reply IS NOT NULL ORDER BY started, rowid',
+                              (conversation_id, COMPLETED)).fetchall()
+    return tuple((row['message'], row['reply']) for row in rows)
 
 
 def latest_session(connection: sqlite3.Connection, conversation_id: str) -> str | None:

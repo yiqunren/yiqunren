@@ -996,13 +996,14 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## 四、Python 後端依賴
 
-資料來源：`pyproject.toml`、鎖檔 `uv.lock`（共 24 個第三方套件，下載來源都是 PyPI 官方 index，`https://pypi.org/simple`），以及 `.venv` 裡已安裝套件的 `*.dist-info`（`METADATA` 與授權檔）。套件由本 repo 以 `uv sync` 安裝並產生鎖檔，沒有複製其他專案的鎖檔或虛擬環境。授權標示以各套件宣告的為準，沒有另外做法律判斷。
+資料來源：`pyproject.toml`、鎖檔 `uv.lock`（共 28 個第三方套件，下載來源都是 PyPI 官方 index，`https://pypi.org/simple`），以及 `.venv` 裡已安裝套件的 `*.dist-info`（`METADATA` 與授權檔）。套件由本 repo 以 `uv sync` 安裝並產生鎖檔，沒有複製其他專案的鎖檔或虛擬環境。授權標示以各套件宣告的為準，沒有另外做法律判斷。
 
-### 4.1 隨後端發布的套件（14 個）
+### 4.1 隨後端發布的套件（22 個）
 
-由 `fastapi` 與 `uvicorn` 往下展開的相依。授權分布：MIT 8 個、BSD-3-Clause 4 個、Apache-2.0 1 個、PSF-2.0 1 個。
+由 `fastapi`、`uvicorn` 與 `anthropic` 往下展開的相依。授權分布：MIT 11 個、BSD-3-Clause 7 個、Apache-2.0 2 個（其中 `anthropic` 另有部分適用 MIT，見該條）、PSF-2.0 1 個、MIT OR Apache-2.0 1 個。
 
 - `pydantic-core` 是編譯過的 Rust 擴充模組；它的 wheel 裡只附 pydantic 自己的授權檔，沒有附它所用的 Rust 套件的授權聲明，本檔沒有核對那一層。
+- `jiter` 同樣是編譯過的 Rust 擴充模組；它的 wheel 附了 CycloneDX 格式的 SBOM（`jiter-python.cyclonedx.json`）列出所用的 Rust 套件，本檔沒有逐一核對那一層的授權。
 - `fastapi` 依賴 `opentelemetry-api`（只是遙測介面，不含傳送功能）。本專案在建立 app 時明確關閉內建遙測（NFR-4），不裝 `opentelemetry-sdk` 與任何匯出器。
 
 #### annotated-doc 0.0.6
@@ -1019,6 +1020,14 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 - PyPI：https://pypi.org/project/annotated-types/0.8.0/
 - 版權：Copyright (c) 2022 the contributors
 
+#### anthropic 2.8.0（直接依賴）
+
+- 授權：Apache-2.0（全文 5）。套件另附 `LICENSE-MIT`（全文 13）：2.0.0 版從 MIT 改為 Apache-2.0，改版前合併的第三方貢獻仍適用 MIT，兩份授權都要保留。
+- 原始碼：https://github.com/anthropics/anthropic-sdk-python
+- PyPI：https://pypi.org/project/anthropic/2.8.0/
+- 版權：Copyright 2023 Anthropic, PBC.
+- 用途：Claude（API）轉接器呼叫 Anthropic Messages API（SPEC NFR-7）。
+
 #### anyio 4.16.0
 
 - 授權：MIT（全文 1）
@@ -1032,6 +1041,13 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 - 原始碼：https://github.com/pallets/click/
 - PyPI：https://pypi.org/project/click/8.5.1/
 - 版權：Copyright 2014 Pallets
+
+#### docstring-parser 0.18.0
+
+- 授權：MIT（全文 1）
+- 原始碼：https://github.com/rr-/docstring_parser
+- PyPI：https://pypi.org/project/docstring-parser/0.18.0/
+- 版權：Copyright (c) 2018 Marcin Kurczewski
 
 #### fastapi 0.162.5（直接依賴）
 
@@ -1047,12 +1063,44 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 - PyPI：https://pypi.org/project/h11/0.16.0/
 - 版權：Copyright (c) 2016 Nathaniel J. Smith <njs@pobox.com> and other contributors
 
+#### httpcore2 2.16.0
+
+- 授權：BSD-3-Clause（全文 3）
+- 原始碼：https://github.com/pydantic/httpx2/blob/main/src/httpcore2
+- PyPI：https://pypi.org/project/httpcore2/2.16.0/
+- 版權：Copyright © 2026 to present Pydantic Services Inc. and individual contributors.
+- 版權：Copyright © 2020, [Encode OSS Ltd](https://www.encode.io/).
+
+#### httpx2 2.16.0（開發用的直接依賴，也是 `anthropic` 的相依）
+
+- 授權：BSD-3-Clause（全文 3）
+- 原始碼：https://github.com/pydantic/httpx2
+- PyPI：https://pypi.org/project/httpx2/2.16.0/
+- 版權：Copyright © 2026 to present Pydantic Services Inc. and individual contributors.
+- 版權：Copyright © 2019, [Encode OSS Ltd](https://www.encode.io/).
+
+#### httpx2-jsfetch 1.0
+
+- 授權：BSD-3-Clause（全文 3）
+- 原始碼：套件沒有標示（授權檔與 `httpx2` 逐字相同，同屬 Pydantic 的 httpx2 專案）
+- PyPI：https://pypi.org/project/httpx2-jsfetch/1.0/
+- 版權：Copyright © 2026 to present Pydantic Services Inc. and individual contributors.
+- 版權：Copyright © 2019, [Encode OSS Ltd](https://www.encode.io/).
+- 只在 Emscripten（瀏覽器內的 Python，例如 Pyodide）安裝（鎖檔標記 `sys_platform == 'emscripten'`，是 `httpx2` 的相依），本機沒有安裝。授權取自 PyPI 上的官方 wheel，下載後核對 SHA-256 與鎖檔相同（2026-11-15）。
+
 #### idna 3.20
 
 - 授權：BSD-3-Clause（全文 4）
 - 原始碼：https://github.com/kjd/idna
 - PyPI：https://pypi.org/project/idna/3.20/
 - 版權：Copyright (c) 2013-2026, Kim Davies and contributors.
+
+#### jiter 0.19.0
+
+- 授權：MIT（全文 1）
+- 原始碼：https://github.com/pydantic/jiter/
+- PyPI：https://pypi.org/project/jiter/0.19.0/
+- 版權：Copyright (c) 2022 to present Samuel Colvin
 
 #### opentelemetry-api 1.45.2
 
@@ -1075,12 +1123,26 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 - PyPI：https://pypi.org/project/pydantic-core/2.50.4/
 - 版權：Copyright (c) 2022 Samuel Colvin
 
+#### sniffio 1.3.1
+
+- 授權：MIT OR Apache-2.0（全文 1、5）。套件的 `LICENSE` 說明可任選 `LICENSE.MIT` 或 `LICENSE.APACHE2` 之一。
+- 原始碼：https://github.com/python-trio/sniffio
+- PyPI：https://pypi.org/project/sniffio/1.3.1/
+- 版權：授權檔沒有單獨的版權行。
+
 #### starlette 1.10.0
 
 - 授權：BSD-3-Clause（全文 3）
 - 原始碼：https://github.com/Kludex/starlette
 - PyPI：https://pypi.org/project/starlette/1.10.0/
 - 版權：Copyright © 2018, [Encode OSS Ltd](https://www.encode.io/).
+
+#### truststore 0.10.5
+
+- 授權：MIT（全文 1）
+- 原始碼：https://github.com/sethmlarson/truststore
+- PyPI：https://pypi.org/project/truststore/0.10.5/
+- 版權：Copyright (c) 2022 Seth Michael Larson
 
 #### typing-extensions 4.16.0
 
@@ -1103,9 +1165,9 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 - PyPI：https://pypi.org/project/uvicorn/0.54.0/
 - 版權：Copyright © 2017-present, [Encode OSS Ltd](https://www.encode.io/).
 
-### 4.2 只在開發與測試時使用的套件（10 個）
+### 4.2 只在開發與測試時使用的套件（6 個）
 
-由 `pytest` 與 `httpx2`（`pyproject.toml` 的 `dev` 群組）展開、且不屬於上一節的套件；不隨後端發布。授權分布：MIT 4 個、BSD-3-Clause 4 個、Apache-2.0 OR BSD-2-Clause 1 個、BSD-2-Clause 1 個。直接的開發依賴是 `httpx2`、`pytest`（它們本身另外列在這一節，不在 4.1）。
+由 `pytest` 與 `httpx2`（`pyproject.toml` 的 `dev` 群組）展開、且不屬於上一節的套件；不隨後端發布。授權分布：MIT 3 個、BSD-3-Clause 1 個、Apache-2.0 OR BSD-2-Clause 1 個、BSD-2-Clause 1 個。直接的開發依賴是 `httpx2`、`pytest`；`httpx2` 同時是 `anthropic` 的相依，連同它展開的套件列在 4.1。
 
 #### colorama 0.4.6
 
@@ -1114,31 +1176,6 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 - PyPI：https://pypi.org/project/colorama/0.4.6/
 - 版權：Copyright (c) 2010 Jonathan Hartley
 - 只在 Windows 安裝（鎖檔標記 `sys_platform == 'win32'`，是 `pytest` 的相依），本機（Linux）沒有安裝。授權取自 PyPI 上的官方 wheel，下載後核對 SHA-256 與鎖檔相同（2026-11-15）。
-
-#### httpcore2 2.16.0
-
-- 授權：BSD-3-Clause（全文 3）
-- 原始碼：https://github.com/pydantic/httpx2/blob/main/src/httpcore2
-- PyPI：https://pypi.org/project/httpcore2/2.16.0/
-- 版權：Copyright © 2026 to present Pydantic Services Inc. and individual contributors.
-- 版權：Copyright © 2020, [Encode OSS Ltd](https://www.encode.io/).
-
-#### httpx2 2.16.0（直接依賴）
-
-- 授權：BSD-3-Clause（全文 3）
-- 原始碼：https://github.com/pydantic/httpx2
-- PyPI：https://pypi.org/project/httpx2/2.16.0/
-- 版權：Copyright © 2026 to present Pydantic Services Inc. and individual contributors.
-- 版權：Copyright © 2019, [Encode OSS Ltd](https://www.encode.io/).
-
-#### httpx2-jsfetch 1.0
-
-- 授權：BSD-3-Clause（全文 3）
-- 原始碼：套件沒有標示（授權檔與 `httpx2` 逐字相同，同屬 Pydantic 的 httpx2 專案）
-- PyPI：https://pypi.org/project/httpx2-jsfetch/1.0/
-- 版權：Copyright © 2026 to present Pydantic Services Inc. and individual contributors.
-- 版權：Copyright © 2019, [Encode OSS Ltd](https://www.encode.io/).
-- 只在 Emscripten（瀏覽器內的 Python，例如 Pyodide）安裝（鎖檔標記 `sys_platform == 'emscripten'`，是 `httpx2` 的相依），本機沒有安裝。授權取自 PyPI 上的官方 wheel，下載後核對 SHA-256 與鎖檔相同（2026-11-15）。
 
 #### iniconfig 2.3.1
 
@@ -1176,20 +1213,13 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 - PyPI：https://pypi.org/project/pytest/9.2.0/
 - 版權：Copyright (c) 2004 Holger Krekel and others
 
-#### truststore 0.10.5
-
-- 授權：MIT（全文 1）
-- 原始碼：https://github.com/sethmlarson/truststore
-- PyPI：https://pypi.org/project/truststore/0.10.5/
-- 版權：Copyright (c) 2022 Seth Michael Larson
-
 ### 4.3 Python 套件授權全文
 
 同一編號的授權文字相同（除了各套件自己的版權行，已列在上面，以及空白排版）。全文取自「全文所列第一個套件」已安裝的授權檔，內容不改。
 
 #### 全文 1
 
-適用：`annotated-doc`、`annotated-types`、`anyio`、`fastapi`、`h11`、`iniconfig`、`pluggy`、`pydantic`、`pydantic-core`、`pytest`、`truststore`
+適用：`annotated-doc`、`annotated-types`、`anyio`、`docstring-parser`、`fastapi`、`h11`、`iniconfig`、`jiter`、`pluggy`、`pydantic`、`pydantic-core`、`pytest`、`sniffio`（MIT 選項）、`truststore`
 
 取自 `annotated-doc` 的 `LICENSE`：
 
@@ -1333,7 +1363,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #### 全文 5
 
-適用：`opentelemetry-api`
+適用：`opentelemetry-api`、`anthropic`、`sniffio`（Apache-2.0 選項）
 
 取自 `opentelemetry-api` 的 `LICENSE`：
 
@@ -2156,4 +2186,24 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+#### 全文 13
+
+適用：`anthropic`（與全文 5 並列，見該套件條目）
+
+取自 `anthropic` 的 `LICENSE-MIT`：
+
+```text
+This repository changed its license from the MIT License to the Apache License, Version 2.0 (see LICENSE) in version 2.0.0. The MIT License below still applies to every version published under it, and to third-party contributions merged into this repository before the change.
+
+--------------------------------------------------------------------------------
+
+Copyright 2023 Anthropic, PBC.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```

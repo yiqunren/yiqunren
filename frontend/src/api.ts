@@ -6,6 +6,8 @@ export interface Adapter {
   auth_modes: string[]
   supports_model: boolean
   supports_effort: boolean
+  /** 能設定單回合花費上限的認證模式（FR-1）。 */
+  budget_modes: string[]
   /** 伺服器目前有沒有這家的執行者；不代表該家的 CLI 已安裝或已登入。 */
   available: boolean
 }
@@ -28,6 +30,8 @@ export interface Member {
   effort: string | null
   auth_mode: string
   timeout_minutes: number
+  /** 單回合花費上限（美元，FR-1）；null 表示不設上限。 */
+  max_budget_usd: number | null
   enabled: boolean
   status: MemberStatus
 }
@@ -38,6 +42,8 @@ export interface MemberSettings {
   effort: string | null
   auth_mode: string
   timeout_minutes: number
+  /** 新增時省略表示用預設值（支援的成員 1 美元）；null 表示不設上限。 */
+  max_budget_usd?: number | null
 }
 
 export interface NewMember extends MemberSettings {

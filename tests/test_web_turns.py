@@ -541,6 +541,9 @@ class TurnApiTest(unittest.TestCase):
         read_events(client, other['request_id'])
         # 第二回合失敗（不存身分），第三回合接第一回合的身分；第三回合存了 s-3，第四回合用它
         self.assertEqual([turn.session for turn in SessionRunner.seen], [None, 's-1', 's-1', 's-3', None])
+        # 前文只帶同一段對話先前完成的回合（失敗的第二回合不帶）。
+        self.assertEqual([turn.history for turn in SessionRunner.seen],
+                         [(), (('first', 'ok'),), (('first', 'ok'),), (('first', 'ok'), ('third', 'ok')), ()])
         workspace = self.settings.state_dir / 'workspaces' / conversation
         self.assertEqual({turn.workspace for turn in SessionRunner.seen[:4]}, {str(workspace)})
         self.assertEqual(SessionRunner.seen[4].workspace,
@@ -571,7 +574,7 @@ class TurnApiTest(unittest.TestCase):
         settings = Settings('127.0.0.1', 8420, self.settings.state_dir, bridges=('claude_code',))
         with PairedClient(create_app(settings)) as client:
             available = {entry['code']: entry['available'] for entry in client.get('/api/adapters').json()['adapters']}
-        self.assertEqual(available, {'codex': False, 'grok': False, 'claude_code': True})
+        self.assertEqual(available, {'codex': False, 'grok': False, 'claude_code': True, 'claude_api': False})
 
     def test_missing_or_disabled_member_is_refused_and_nothing_is_stored(self):
         client = self.client()

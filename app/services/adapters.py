@@ -101,7 +101,7 @@ class Adapter:
         return self.turn_fields | self.mode_fields.get(auth_mode, frozenset())
 
 
-# 預設登記：順序依 SPEC NFR-7（Codex、Grok、Claude Code），也是群聊發言與主持人預設候選的順序。
+# 預設登記：順序依 SPEC NFR-7（Codex、Grok、Claude Code、Claude（API）），也是群聊發言與主持人預設候選的順序。
 DEFAULT_ADAPTERS = (
     Adapter(
         code="codex", name="Codex",
@@ -132,6 +132,16 @@ DEFAULT_ADAPTERS = (
         choose_when="任務需要程式實作或文件整理，且材料與專案上下文已在此工作區。",
         model_tiers=("Sonnet Low", "Sonnet Medium", "Opus High"), tier_note="最低模型為 Sonnet，不使用 Haiku",
         host_output="prompt", error_class_rule="claude_events",
+    ),
+    Adapter(
+        # 後端直接呼叫 Anthropic API（app/web/claude_api.py），沒有橋接程式；只做對話，不用工作目錄。
+        code="claude_api", name="Claude（API）",
+        turn_fields=frozenset({"message", "model", "effort"}),
+        auth_modes=("api_key",),
+        mode_fields={"api_key": frozenset({"max_budget_usd"})},
+        strengths=("對話與問答", "文字撰寫及結構整理", "綜合已提供的材料"),
+        weaknesses=("不能讀寫檔案或使用工作目錄", "缺來源時不能補造事實或引用", "整理得完整不代表主張正確"),
+        choose_when="只需要對話、撰寫或整理已提供的文字，不需要檔案或工具。",
     ),
 )
 

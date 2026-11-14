@@ -187,6 +187,24 @@ class TurnStoreTest(unittest.TestCase):
         self.assertIsNone(turns.mark_stopping(self.connection, finished, 6.0))
         self.assertIsNone(turns.mark_stopping(self.connection, str(uuid.uuid4()), 6.0))
 
+    def test_completed_exchanges_are_in_order_and_skip_unfinished_turns(self):
+        self.assertEqual(turns.completed_exchanges(self.connection, self.conversation), ())
+        first = self.start(message='問一')
+        turns.finish(self.connection, first, turns.COMPLETED, 1.0, reply='答一')
+        failed = self.start(message='失敗的問題')
+        turns.finish(self.connection, failed, turns.FAILED, 2.0, error_kind=turns.INTERNAL_ERROR)
+        interrupted = self.start(message='中斷的問題')
+        turns.finish(self.connection, interrupted, turns.INTERRUPTED, 3.0)
+        unknown = self.start(message='結果未知的問題')
+        turns.finish(self.connection, unknown, turns.UNKNOWN, 3.5)
+        other = self.start(conversation=str(uuid.uuid4()), message='別段對話')
+        turns.finish(self.connection, other, turns.COMPLETED, 4.0, reply='別段回覆')
+        second = self.start(message='問二')
+        turns.finish(self.connection, second, turns.COMPLETED, 5.0, reply='答二')
+        self.start(message='還在執行')
+        self.assertEqual(turns.completed_exchanges(self.connection, self.conversation),
+                         (('問一', '答一'), ('問二', '答二')))
+
 
 if __name__ == '__main__':
     unittest.main()
