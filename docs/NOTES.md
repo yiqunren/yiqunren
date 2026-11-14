@@ -21,7 +21,7 @@
     - 中斷：服務層呼叫 `runner.stop(turn_id)`（真轉接器送 `turn_stop`），不再取消 asyncio 工作。送達後 SSE 先送一個 `stopping`（中斷中）事件，之後才是結束事件；送不到轉接器時回 502，回合不變。
     - 逾時：由轉接器或它的橋接執行，秒數放在 `TurnInput.timeout`；服務層不再自己計時。
     - 伺服器關閉（asyncio 取消）時不停止遠端的回合。重啟後 `TurnService.recover()` 對有 `bridge_record` 的進行中回合呼叫 `resume` 接回；沒有身分、身分讀不出來、轉接器不支援接回（`NotImplementedError`）或沒有轉接器的，標為「未知」。
-  - 真轉接器 `app/web/worker_runner.py`（`WorkerTurnRunner(provider, auth_mode=, fields=)`）：包住 `app/services/worker_turn.py`，沒有改 `worker_turn.py`、`turn_contract.py`、`turn_host.py`。`tests/test_worker_runner.py` 用同程序裡的真 `TurnHost`（經 Unix socket、testbot 轉接器）驗證完成後 ack、存失敗不 ack、中斷（確認與未確認）、中斷比 `turn_begin` 先到、橋接重啟後接回得到「未知」，以及 HTTP 到橋接的接回與中斷。它還沒接進設定，目前只能在建立 app 時用 `create_app(runner=…)` 注入。
+  - 真轉接器 `app/web/worker_runner.py`（`WorkerTurnRunner(provider, auth_mode=, fields=)`）：包住 `app/services/worker_turn.py`，沒有改 `worker_turn.py`、`turn_contract.py`、`turn_host.py`。`tests/test_worker_runner.py` 用同程序裡的真 `TurnHost`（經 Unix socket、testbot 轉接器）驗證完成後 ack、存失敗不 ack、中斷（確認與未確認）、中斷比 `turn_begin` 先到、橋接重啟後接回得到「未知」，以及 HTTP 到橋接的接回與中斷。它原本還沒接進設定，只能在建立 app 時用 `create_app(runner=…)` 注入；現在可以用 `YIQUNREN_BRIDGES` 接上 Claude Code（見下方「Claude Code 橋接」）。
   - `YIQUNREN_FAKE_TURNS=1` 啟用假轉接器（`app/web/fake_runner.py`，不呼叫任何 AI，不支援接回，所有轉接器的成員共用）；沒有轉接器時送出回合回 503。
 - FR-1 成員設定的後端（2026-11-14，`b52577f` SPEC、`86b8d94` 實作）：
   - SPEC FR-1 補了：轉接器新增後不能改；停用＝設定保留、不能送新回合、已在跑的回合不受影響；刪除＝拿掉設定、保留對話（回合記著當時的成員名稱），有進行中回合時不能刪；模型清單檢查的分期；成員狀態的推算方式；私聊依成員設定執行。
@@ -111,7 +111,7 @@
   - 測試：新增 `tests/test_default_members.py`（10 個）；`tests/test_web_members.py` 有 3 個舊測試原本假設「一開始沒有成員」，改成「預設成員加上新增的那位」，比對仍然精確。在暫存副本植入 12 種錯誤，全部被抓到。
   - 已知限制：
     - 已經存在的資料庫不會補建預設成員。這個功能之前建立的資料庫（例如開發時用過的狀態目錄）要自己新增成員，或換一個新的狀態目錄。
-    - 目前沒有任何轉接器接上真的 AI（橋接程式還沒做），預設成員在成員畫面會標「未接上」，送私聊會回 503；只有 `YIQUNREN_FAKE_TURNS=1` 的假轉接器能回覆。
+    - （寫這條時）沒有任何轉接器接上真的 AI，預設成員在成員畫面會標「未接上」，送私聊會回 503。現在 Claude Code 有橋接了，見下方「Claude Code 橋接」；Codex 與 Grok 仍然沒有。
 - 真瀏覽器驗證（2026-11-15，用暫存後端，沒有改任何 repo 檔案）：
   - 做法：在暫存目錄寫一支啟動腳本，呼叫 `create_app(settings, runner=SampleRunner(...))`，`SampleRunner` 是 `FakeRunner` 的子類別，steps=60、tick=1.0（每個回合約 60 秒，來得及按中斷與重新整理），最後回覆一段含標題、清單、待辦、表格、程式碼區塊、引用、連結、圖片與原始 HTML 的 Markdown 樣本；狀態目錄用暫存的 0700 目錄，埠 8420；配對碼用 `python -m app.web pair` 產生；驗完停掉後端並刪除整個暫存目錄（腳本不在 repo 裡，要重做就照這段重寫）。
   - 擁有者用自己的瀏覽器操作：配對成功，三位預設成員各送一則私聊，三個回合都完成（各約 60 秒、60 個進度事件、回覆和樣本逐字相同）。伺服器紀錄裡 3 次 `POST /api/turns` 都是 202，所以 `Referrer-Policy: same-origin` 沒有擋到同源的 POST（原本只是依規格判斷）；沒有任何錯誤回應。
@@ -122,16 +122,35 @@
     - 成員畫面的新增、修改、停用、刪除，與刪除對話：伺服器紀錄裡沒有對應的請求，這輪沒有操作。
     - 配對碼輸入錯誤時的畫面：紀錄裡只有一次成功的配對。
     - 其他瀏覽器（Firefox、Safari）與手機寬度的版面；截圖只看過 1280 像素寬的 Chrome。
-- 截至 2026-11-15：`377efc2` 是最新的程式 commit；`pytest` 結果 385 passed（`-W error`），前端 `npm test` 53 passed。推送現況以 `git status` 為準，筆記更新不一定已推送。還沒有橋接程式（見下方建議第 2 項）。
+- Claude Code 橋接（API key 模式，2026-11-15，`d74f644` SPEC、`82a5a00` 實作）：
+  - SPEC NFR-7 新增「MVP：Claude Code 轉接器（API key 模式）」小節：獨立橋接程序；只用擁有者環境裡的 `ANTHROPIC_API_KEY`（系統不讀值、不存、不記錄，沒設就拒絕啟動）；CLI 用精簡模式；每段對話一個空白工作目錄（狀態目錄底下，刪除對話時一併刪除）；私聊權限是「可建立與修改工作目錄裡的檔案、不能執行任何指令、不能讀寫目錄以外」；續接最近一個完成的回合；結果不是成功就失敗並寫診斷檔。
+  - 橋接 `scripts/claude_bridge.py`：另外啟動（`python -m scripts.claude_bridge`），用 `TurnHost` 包 Unix socket（目錄 0700、socket 0600、舊 socket 沒人在聽才刪、有人在聽拒絕啟動、SIGTERM 乾淨結束）。每回合執行一次 `claude --bare -p --output-format stream-json --verbose --permission-mode acceptEdits --disallowedTools Bash Monitor PowerShell --settings <禁止讀寫工作目錄以外>`，訊息走 stdin、工作目錄是該段對話的工作區、`--model`／`--effort`／`--resume` 視情況加。`Monitor`、`PowerShell` 是對照官方工具清單（2026-11-15 查）補上的指令類工具。寫入權（NFR-2）申請範圍是工作目錄。結果只認最後一個 `result` 事件且 `subtype=success`、`is_error=false`、結束碼 0。
+  - 後端：資料庫第 7 版（`turns.provider_session`，只在完成的回合存）；`turns.latest_session` 取最近一個完成回合的 session，最近完成的回合沒有就是沒有，不退回更早的；`app/storage/workspaces.py`（工作目錄路徑、`check`、`ensure`、`remove`，都不跟隨符號連結）；`app/web/bridges.py`（`claude_code` 的欄位組法與 `runners()`）；`YIQUNREN_BRIDGES`（逗號分隔的轉接器代號，必須已登記、不能重複、不能和 `YIQUNREN_FAKE_TURNS=1` 同時設）；`Hooks.save(reply, session=None)`。刪除對話時一併刪工作目錄，刪不掉只記警告、不影響刪除。
+  - 測試：`pytest -W error` 420 passed（原本 385）；新增 `tests/test_claude_bridge.py`（用假的 `claude` 執行檔檢查參數、工作目錄、stdin、失敗分類、經 socket 的完整往返與續接、socket 準備與啟動檢查）、`tests/test_workspaces.py`，並補了存取層、設定與 `TurnService` 的測試。前端沒有改動，沒有重跑（最近一次是 53 passed）。在記憶體中植入 37 種錯誤全部被抓到（每個模組另跑一次沒改動的對照組確認測試會過）。
+  - 真實測試（擁有者授權、用自己的 API key；暫存狀態目錄與診斷目錄，橋接由擁有者在自己的終端機啟動，我這邊沒有碰 key）：`sonnet`、`low` effort、每回合 0.5 美元上限（測試腳本另加，後端目前沒有上限）。
+    - 第一次兩個回合都失敗：Anthropic 回 401，診斷檔分類為 `authentication_failed`；原因是那把 key 的值本身不對，用 `curl` 查 `/v1/models` 也是 401。CLI 在 API 回錯時回報 `subtype=success` 但 `is_error=true`，橋接正確判為失敗。
+    - 換了有效的 key 之後兩個回合都成功：回合 1 用 `Edit` 建立 `hello.txt`（內容 `hi`），回覆 `done`，回報進度；回合 2 用回合 1 的 session 續接，答得出檔名，並表示沒有 shell 工具、無法執行 `ls -la /`。工作目錄只有 `hello.txt`，寫入權登記沒有殘留。實際花費沒有記錄，要到 Anthropic Console 的用量頁面查。
+  - 已知限制：
+    - 單回合沒有花費上限（`max_budget_usd` 目前固定不傳）；要不要在 SPEC 加成員層級的上限尚未決定。
+    - 失敗的固定分類（額度不足、認證失敗）還分不出來，一律記為內部錯誤；只有診斷檔裡看得到錯誤類別。要等橋接協定第 3 版的 `error_kind`。
+    - 進度只回報 Claude Code 開始使用哪個工具（工具名稱），沒有其他內容。
+    - 回覆編碼後超過 115,000 位元組時橋接直接判失敗（後端單行回覆上限 120,000）；介於 100,000 與 115,000 之間的由後端判為「回覆過長」。
+    - 真實測試沒涵蓋：讀寫工作目錄以外的檔案是否被擋、中斷執行中的回合、伺服器重啟後接回；這幾項只有離線測試（假 `claude`），權限設定是否真的擋住尚未用真 CLI 驗證。
+    - 橋接要由擁有者自己另外啟動，後端不會幫忙啟動；橋接與後端要用同一個狀態目錄。
+    - 只支援 API key 模式；訂閱 CLI 模式依 SPEC 第 7 節第 3 項等 Anthropic 確認後再開放。
+    - Claude Code CLI 版本只測過 2.1.325；`--bare` 與權限設定的行為隨版本可能改變。
+- 截至 2026-11-15：`82a5a00` 是最新的程式 commit；`pytest` 結果 420 passed（`-W error`），前端 `npm test` 53 passed（前端這輪沒有改動、沒有重跑）。推送現況以 `git status` 為準，筆記更新不一定已推送。真的 AI 目前只接了 Claude Code（API key 模式），Codex 與 Grok 還沒有橋接（見下方建議第 2 項）。
 - 建議的下一步（建議，不是決定）：
   1. （已完成，`95e69a8` SPEC、`d34468c` 實作）FR-2 回覆長度上限：UTF-8 超過 100,000 位元組時回合失敗，分類 `reply_too_long`，回覆不存、不截斷；檢查在服務層 `save`。限制：橋接每次回覆是一行，單行上限 120,000 位元組（`cli_socket.MAX_RESPONSE`），橋接若回傳更大的一行，`worker_turn` 會當成連線失敗，回合變成「未知」而不是「回覆過長」；要明確告知得由橋接端自己先檢查 100,000 位元組並回報，做橋接與協定第 3 版時一起處理。
   2. 接 Codex 的真實轉接器。包住 `worker_turn` 的 `WorkerTurnRunner` 已經有了，剩下的是：
      - 橋接程式從哪來（決定 3，2026-11-14 定案：先請規格側審查匯入舊專案的 `codex_host_bridge`，審查不過或依賴太多再改成本 repo 自己寫；審查結果還沒回來，見「仍待決定」）：repo 裡目前只有 `scripts/turn_host.py`（橋接共用的回合管理）與 `scripts/private_cli.py`，沒有可以啟動、監聽 socket 的橋接程式。
-     - 把它接進設定與 `create_app`（成員、認證模式、`fields` 怎麼組：Codex 的欄位是 message、thread_id、workspace、model、effort）。
+     - 把它接進設定與 `create_app`：機制已由 Claude Code 橋接建好（`YIQUNREN_BRIDGES`、`app/web/bridges.py` 的 `BUILDERS`），Codex 只要新增 `fields` 的組法（Codex 的欄位是 message、thread_id、workspace、model、effort）並登記到 `BUILDERS`；Codex 的對話身分欄位叫 `thread_id`，目前 `TurnInput.session` 與 `hooks.save(..., session=)` 是通用的，用在 Codex 時要確認 `thread_id` 的格式能通過後端的 session 格式檢查。
      - 橋接協定第 3 版加上結構化的錯誤分類（`error_kind`），才分得出 `timeout` 與 `internal_error`；目前橋接逾時回報為一般失敗，只能記成 `internal_error`。決定 1：等做橋接時一起加。
   3. （後端已完成，`86b8d94`；轉接器清單 API `3f382ef`，見上方）FR-1 成員設定。剩下的見上方「沒做」。
   4. （已完成，`a697e45` SPEC、`6535e39` 實作，見上方）範圍 C（NFR-3）：配對、Cookie、CSRF、Host、大小與頻率限制。剩下的見上方「已知限制」與「沒做」。
-  5. 前端：骨架（`79908d9`）與私聊畫面（`83fe929`）已完成，預設成員（`377efc2`）讓配對後直接能私聊（見上方）；真瀏覽器已驗證一部分，剩下的見上方「真瀏覽器驗證」的「還沒驗證」；接著再接 Grok，最後做 FR-3 群聊（畫面與後端都還沒有）。
+  5. 前端：骨架（`79908d9`）與私聊畫面（`83fe929`）已完成，預設成員（`377efc2`）讓配對後直接能私聊（見上方）；真瀏覽器已驗證一部分，剩下的見上方「真瀏覽器驗證」的「還沒驗證」；Claude Code 橋接已完成（見上方），接著接 Grok，最後做 FR-3 群聊（畫面與後端都還沒有）。
+  6. 還沒用真瀏覽器配合真的 Claude Code 橋接走一遍（真實測試是用腳本直接經橋接跑的，沒有經過網頁介面）。
+  7. 匯入側 session 盤點舊專案裡可匯入的自寫檔案（擁有者 2026-11-15 決定維持開源、可商用的目標、不複製舊專案主體；盤點交辦內容已給擁有者，結果還沒回來）；`THIRD_PARTY_NOTICES.md` 還沒建立。
 
 ## 尚未寫進其他文件的待辦
 
