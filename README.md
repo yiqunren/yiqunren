@@ -86,6 +86,7 @@ curl -b cookies.txt http://127.0.0.1:8420/api/members
 - `POST /api/pair`：用配對碼換 Cookie，內容是 JSON：`code`（大小寫、連字號都可以）。配對碼不對或已失效回 403；輸錯 5 次就作廢，要重新產生。
 - `GET /api/session`：查這個瀏覽器是否已配對，回傳 `{"paired": true}` 或 `false`。
 - `DELETE /api/session`：登出這個瀏覽器，只撤銷它自己，其他已配對的瀏覽器不受影響。
+- `GET /api/adapters`：列出新增成員時可選的轉接器，依登記順序：`code`、`name`、`auth_modes`（支援的認證模式）、`supports_model`、`supports_effort`（能不能指定模型、推理強度），以及 `available`（伺服器目前有沒有這家的執行者；沒有時送出回合會回 503，但有也不代表該家 CLI 已安裝或已登入）。`terms_notice` 是選訂閱 CLI 模式時要顯示的提示。
 - `POST /api/members`：新增一位成員（你設定的一位 AI 參與者），內容是 JSON：`request_id`（前端產生的 UUID，也是之後的成員 ID）、`adapter`（轉接器代號，例如 `codex`）、`name`、`auth_mode`（`api_key` 或 `subscription_cli`，要是該轉接器支援的），可選 `model`（空白表示用該家預設）、`effort`（推理強度，該轉接器支援時才能設）、`timeout_minutes`（單回合逾時，1～60 分鐘，預設 15）。同一個 `request_id` 重送回傳原本的成員。選訂閱 CLI 模式時，回傳的 `terms_notice` 會帶服務條款提示。模型目前只存文字，還不比對各家的模型清單。
 - `GET /api/members`、`GET /api/members/{id}`：列出成員或查一位，含狀態 `status`：`running`（有進行中回合）、`needs_review`（最近一個回合是「未知」，需要你核對）、`idle`。
 - `PATCH /api/members/{id}`：只送要改的欄位：`name`、`model`、`effort`（送 `null` 清除）、`auth_mode`、`timeout_minutes`、`enabled`（`false` 是停用：設定保留、不能送新回合，已經在跑的回合不受影響）。轉接器不能改，要換就新增另一位成員。

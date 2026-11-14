@@ -1,4 +1,4 @@
-"""FR-1 成員設定的 HTTP 介面：新增（NFR-1 請求 ID）、列出、查詢、修改（含停用）、刪除。
+"""FR-1 成員設定的 HTTP 介面：新增（NFR-1 請求 ID）、列出、查詢、修改（含停用）、刪除，以及可選的轉接器清單。
 
 轉接器、認證模式、推理強度是否合法一律查轉接器登記處（NFR-7），不在這裡列出固定幾家。
 模型：轉接器能提供模型清單之前先存文字，不比對清單（SPEC FR-1 分期）。
@@ -108,12 +108,17 @@ class MemberUpdate(BaseModel):
         return _effort(value)
 
 
+def settable_fields(entry: adapters.Adapter) -> frozenset:
+    """成員可以設定的回合欄位；新增、修改成員的檢查與轉接器清單共用，兩邊才不會不一致。"""
+    return entry.turn_fields.union(*entry.mode_fields.values())
+
+
 def check_against_registry(adapter: str, auth_mode: str, model: str, effort: str | None) -> None:
     """依登記處檢查；不合法丟 HTTPException(422)，錯誤訊息不帶入原值。"""
     if not adapters.is_registered(adapter):
         raise HTTPException(status_code=422, detail='未登記的轉接器')
     entry = adapters.get(adapter)
-    fields = entry.turn_fields.union(*entry.mode_fields.values())
+    fields = settable_fields(entry)
     if auth_mode not in entry.auth_modes:
         raise HTTPException(status_code=422, detail='這個轉接器不支援這種認證模式')
     if model and 'model' not in fields:
@@ -143,6 +148,22 @@ def view(row, status: str) -> dict:
 
 def _db_path(request: Request):
     return request.app.state.db_path
+
+
+@router.get('/api/adapters')
+def list_adapters(request: Request):
+    """成員設定可選的轉接器與支援項目，依登記順序（NFR-7）。
+
+    available 只代表伺服器目前有這家的執行者（沒有時送出回合回 503），不代表 CLI 已安裝或已登入。
+    不回傳給調度用的能力描述、模型等級、socket 位置與認證模式專屬欄位。"""
+    service = request.app.state.turns
+    listed = []
+    for entry in adapters.adapters():
+        fields = settable_fields(entry)
+        listed.append({'code': entry.code, 'name': entry.name, 'auth_modes': list(entry.auth_modes),
+                       'supports_model': 'model' in fields, 'supports_effort': 'effort' in fields,
+                       'available': service.runner_for(entry.code) is not None})
+    return {'adapters': listed, 'terms_notice': TERMS_NOTICE}
 
 
 def _member_id(member_id: str) -> str:

@@ -182,5 +182,75 @@ class MemberApiTest(unittest.TestCase):
         self.assertEqual(client.delete('/api/members/' + member['id']).status_code, 204)
 
 
+class AdapterListTest(unittest.TestCase):
+    """GET /api/adapters：成員設定可選的轉接器與支援項目，一律從登記處取得（NFR-7）。"""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='yiqunren-adapters-test-')
+        self.addCleanup(self.temporary.cleanup)
+        self.settings = Settings(host='127.0.0.1', port=8420, state_dir=Path(self.temporary.name) / 'state')
+
+    def listed(self, runner):
+        with PairedClient(create_app(self.settings, runner=runner)) as client:
+            response = client.get('/api/adapters')
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def test_default_registry_in_order_with_only_the_listed_fields(self):
+        # 完全相等：能力描述、模型等級、socket 位置、認證模式專屬欄位都不在回應裡。
+        self.assertEqual(self.listed(FakeRunner(steps=1, tick=0.01)), {
+            'adapters': [
+                {'code': 'codex', 'name': 'Codex', 'auth_modes': ['api_key', 'subscription_cli'],
+                 'supports_model': True, 'supports_effort': True, 'available': True},
+                {'code': 'grok', 'name': 'Grok', 'auth_modes': ['api_key', 'subscription_cli'],
+                 'supports_model': True, 'supports_effort': True, 'available': True},
+                {'code': 'claude_code', 'name': 'Claude Code', 'auth_modes': ['api_key'],
+                 'supports_model': True, 'supports_effort': True, 'available': True},
+            ],
+            'terms_notice': TERMS_NOTICE,
+        })
+
+    def test_available_follows_the_configured_runners(self):
+        cases = [(None, []), ({'grok': FakeRunner(steps=1, tick=0.01)}, ['grok']),
+                 (FakeRunner(steps=1, tick=0.01), list(adapters.codes()))]
+        for runner, expected in cases:
+            with self.subTest(runner=runner):
+                listed = self.listed(runner)['adapters']
+                self.assertEqual([a['code'] for a in listed if a['available']], expected)
+
+    def test_registry_changes_show_up_and_match_what_members_accept(self):
+        plain = adapters.Adapter(code='plainbot', name='Plain Bot', turn_fields=frozenset({'message'}),
+                                 auth_modes=('api_key',), strengths=('測試',), weaknesses=('測試',),
+                                 choose_when='測試用。')
+        # 模型只出現在某個認證模式的專屬欄位：清單和新增成員的檢查要一致。
+        moded = adapters.Adapter(code='modebot', name='Mode Bot', turn_fields=frozenset({'message'}),
+                                 auth_modes=('api_key',), mode_fields={'api_key': frozenset({'model'})},
+                                 strengths=('測試',), weaknesses=('測試',), choose_when='測試用。')
+        with PairedClient(create_app(self.settings, runner={'plainbot': FakeRunner(steps=1, tick=0.01)})) as client:
+            with adapters.override((*adapters.adapters(), plain, moded)):
+                listed = {a['code']: a for a in client.get('/api/adapters').json()['adapters']}
+                self.assertEqual(list(listed), [*adapters.codes()])
+                self.assertEqual(listed['plainbot'], {'code': 'plainbot', 'name': 'Plain Bot', 'auth_modes': ['api_key'],
+                                                      'supports_model': False, 'supports_effort': False,
+                                                      'available': True})
+                self.assertEqual((listed['modebot']['supports_model'], listed['modebot']['supports_effort'],
+                                  listed['modebot']['available']), (True, False, False))
+                for code, item in listed.items():
+                    body = {'request_id': str(uuid.uuid4()), 'adapter': code, 'name': code, 'auth_mode': 'api_key'}
+                    with self.subTest(code=code):
+                        self.assertEqual(client.post('/api/members', json={**body, 'model': 'm1'}).status_code,
+                                         201 if item['supports_model'] else 422)
+                        self.assertEqual(client.post('/api/members', json={
+                            **body, 'request_id': str(uuid.uuid4()), 'effort': 'low'}).status_code,
+                            201 if item['supports_effort'] else 422)
+            with adapters.override(adapters.adapters()[1:]):  # 移除第一家
+                codes = [a['code'] for a in client.get('/api/adapters').json()['adapters']]
+                self.assertEqual(codes, ['grok', 'claude_code'])
+
+    def test_requires_pairing(self):
+        with PairedClient(create_app(self.settings, runner=FakeRunner(steps=1, tick=0.01)), pair=False) as client:
+            self.assertEqual(client.get('/api/adapters').status_code, 401)
+
+
 if __name__ == '__main__':
     unittest.main()
