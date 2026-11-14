@@ -47,6 +47,49 @@ export interface NewMember extends MemberSettings {
 
 export type MemberChanges = Partial<MemberSettings> & { enabled?: boolean }
 
+/** FR-2：進行中，或四種結束狀態之一。 */
+export type TurnState = 'running' | 'completed' | 'failed' | 'interrupted' | 'unknown'
+
+export interface Turn {
+  id: string
+  conversation_id: string
+  member: string
+  /** 送出當時的成員名稱；成員刪除後照樣顯示。 */
+  member_name: string | null
+  adapter: string | null
+  message: string
+  state: TurnState
+  /** 失敗時的固定分類。 */
+  error_kind: string | null
+  reply: string | null
+  /** 伺服器時間，秒。 */
+  started: number
+  finished: number | null
+}
+
+export interface NewTurn {
+  request_id: string
+  conversation_id: string
+  member: string
+  text: string
+}
+
+export interface ConversationSummary {
+  id: string
+  /** 第一則訊息的開頭。 */
+  title: string
+  turns: number
+  member: string
+  member_name: string | null
+  /** 最後一個回合的狀態。 */
+  state: TurnState
+  /** 最後活動時間（伺服器時間，秒）。 */
+  updated: number
+}
+
+/** 擁有者一則訊息的長度上限（字數），和後端一致。 */
+export const MAX_MESSAGE_CHARS = 32_000
+
 /** status 是 0 表示連不上伺服器。 */
 export class ApiError extends Error {
   readonly status: number
@@ -63,6 +106,22 @@ export class ApiError extends Error {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+// 伺服器時鐘減去這台裝置時鐘的差（毫秒）。回合的開始時間是伺服器時間，
+// 從別台裝置連線時兩邊時鐘可能不同，算經過時間要用伺服器的時鐘。
+let clockOffset = 0
+
+function noteServerTime(header: string | null): void {
+  const server = header === null ? Number.NaN : Date.parse(header)
+  if (Number.isFinite(server)) {
+    clockOffset = server - Date.now()
+  }
+}
+
+/** 依最近一次回應的 Date 標頭推算的伺服器現在時間（秒）；Date 標頭只到秒，誤差約一秒。 */
+export function serverNow(): number {
+  return (Date.now() + clockOffset) / 1000
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -84,6 +143,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   } catch {
     throw new ApiError(0, null, null)
   }
+  noteServerTime(response.headers.get('Date'))
   if (response.status === 204) {
     return undefined as T // 沒有內容
   }
@@ -166,4 +226,39 @@ export async function updateMember(id: string, changes: MemberChanges): Promise<
 
 export function deleteMember(id: string): Promise<void> {
   return request('DELETE', `/api/members/${encodeURIComponent(id)}`)
+}
+
+export async function listConversations(): Promise<ConversationSummary[]> {
+  const data = await request<{ conversations: ConversationSummary[] }>('GET', '/api/conversations')
+  return data.conversations
+}
+
+export async function getConversation(id: string): Promise<Turn[]> {
+  const data = await request<{ turns: Turn[] }>('GET', `/api/conversations/${encodeURIComponent(id)}`)
+  return data.turns
+}
+
+export function deleteConversation(id: string): Promise<void> {
+  return request('DELETE', `/api/conversations/${encodeURIComponent(id)}`)
+}
+
+/** 同一個 request_id、同樣內容重送時，伺服器回傳原本那個回合，不會再執行一次（NFR-1）。 */
+export async function startTurn(turn: NewTurn): Promise<Turn> {
+  const data = await request<{ turn: Turn }>('POST', '/api/turns', turn)
+  return data.turn
+}
+
+export async function getTurn(id: string): Promise<Turn> {
+  const data = await request<{ turn: Turn }>('GET', `/api/turns/${encodeURIComponent(id)}`)
+  return data.turn
+}
+
+/** 只是把中斷要求送給轉接器；結果（已中斷或未知）由回合事件告知。 */
+export async function interruptTurn(id: string): Promise<Turn> {
+  const data = await request<{ turn: Turn }>('POST', `/api/turns/${encodeURIComponent(id)}/interrupt`)
+  return data.turn
+}
+
+export function turnEventsPath(id: string): string {
+  return `/api/turns/${encodeURIComponent(id)}/events`
 }

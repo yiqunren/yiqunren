@@ -10,7 +10,7 @@
 
 **早期開發中，還不能給一般使用者使用。**
 
-目前有核心的協定、資料驗證、本機元件與後端 API，以及對應的測試。網頁介面只有配對與成員設定兩個畫面，還不能聊天；沒有安裝包，實際呼叫各家 AI CLI 的橋接程式也還沒完成。
+目前有核心的協定、資料驗證、本機元件與後端 API，以及對應的測試。網頁介面有配對、成員設定與私聊三個畫面，群聊還沒做；沒有安裝包，實際呼叫各家 AI CLI 的橋接程式也還沒完成。
 
 ## 想做到什麼
 
@@ -74,7 +74,7 @@ curl -b cookies.txt http://127.0.0.1:8420/api/members
 
 ### 網頁介面
 
-網頁介面的原始碼在 `frontend/`（React＋TypeScript＋Vite），目前只有配對與成員設定兩個畫面。打包需要 Node.js 與 npm：Vite 8 要 Node.js 20.19 以上或 22.12 以上，目前只在 Node.js 22 上測過。打包後的檔案放在 `app/web/static/`（不進 Git），由後端提供。
+網頁介面的原始碼在 `frontend/`（React＋TypeScript＋Vite），目前有配對、成員設定與私聊三個畫面。成員的回覆以 Markdown 顯示（用 `react-markdown` 與 `remark-gfm`）：回覆裡的 HTML 只當文字顯示，圖片不載入，連結只允許 `http`、`https`、`mailto`。打包需要 Node.js 與 npm：Vite 8 要 Node.js 20.19 以上或 22.12 以上，目前只在 Node.js 22 上測過。打包後的檔案放在 `app/web/static/`（不進 Git），由後端提供。
 
 ```bash
 cd frontend
@@ -107,9 +107,10 @@ npm run build             # 型別檢查，並打包到 ../app/web/static/
 - `GET /api/members`、`GET /api/members/{id}`：列出成員或查一位，含狀態 `status`：`running`（有進行中回合）、`needs_review`（最近一個回合是「未知」，需要你核對）、`idle`。
 - `PATCH /api/members/{id}`：只送要改的欄位：`name`、`model`、`effort`（送 `null` 清除）、`auth_mode`、`timeout_minutes`、`enabled`（`false` 是停用：設定保留、不能送新回合，已經在跑的回合不受影響）。轉接器不能改，要換就新增另一位成員。
 - `DELETE /api/members/{id}`：刪除成員設定；過去的對話照樣保留，回合上記著當時的成員名稱。還有進行中回合時回 409。
-- `POST /api/turns`：送出一個私聊回合，內容是 JSON：`request_id`、`conversation_id`（都是前端產生的 UUID）、`member`（成員 ID）、`text`。成員不存在回 422、已停用回 409；回合使用該成員的轉接器、模型、推理強度、認證模式與逾時。同一個 `request_id` 重送會回傳原本的回合，不會重複執行；同一段對話同時只能有一個進行中的回合。
+- `POST /api/turns`：送出一個私聊回合，內容是 JSON：`request_id`、`conversation_id`（都是前端產生的 UUID）、`member`（成員 ID）、`text`。成員不存在回 422、已停用回 409；回合使用該成員的轉接器、模型、推理強度、認證模式與逾時。同一個 `request_id` 重送會回傳原本的回合，不會重複執行；同一段對話同時只能有一個進行中的回合。一段對話只屬於一位成員（第一個回合的成員），換成別的成員送會回 409。
 - `POST /api/turns/{id}/interrupt`：把中斷要求交給轉接器，送達後回 202，SSE 會先送一個 `stopping`（中斷中）事件。結果由 SSE 的結束事件告知：轉接器確認程序已停止才是「已中斷」，無法確認時是「未知」。回合已結束時回 409；要求沒有送達轉接器時回 502，回合可能仍在執行。
 - `GET /api/turns/{id}`：查回合狀態（執行中、完成、失敗、已中斷、未知），含送出的訊息與回覆。單回合逾時依成員設定，由轉接器或它的橋接執行：逾時且確認程序停止是「失敗（逾時）」，無法確認時是「未知」。回覆以 UTF-8 編碼超過 100,000 位元組時是「失敗（回覆過長）」，回覆不存、也不截斷。
+- `GET /api/conversations`：列出所有對話，最近有活動的排前面。每段對話有 `id`、`title`（第一則訊息的開頭，最多 60 個字）、`turns`（回合數）、`member` 與 `member_name`（成員 ID 與當時的名稱）、`state`（最後一個回合的狀態）、`updated`（最後活動時間）。不含訊息全文與回覆。
 - `GET /api/conversations/{conversation_id}`：依時間順序列出一段對話的所有回合（訊息與回覆）。
 - `DELETE /api/conversations/{conversation_id}`：刪除一整段對話的訊息、回覆與事件；還有進行中回合時回 409。刪除後用同一個 `request_id` 重送會回 410，不會重新執行。
 - `GET /api/turns/{id}/events`：用 SSE 接收進度、中斷中與結束事件。不帶 `Last-Event-ID` 時從頭重送，帶了就只補送之後的事件。

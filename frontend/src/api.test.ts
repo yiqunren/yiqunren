@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import * as api from './api'
-import { installFetch, member } from './test-server'
+import { installFetch, member, turn } from './test-server'
 
 describe('請求 ID', () => {
   it('是 UUID 第 4 版，而且每次不同', () => {
@@ -36,6 +36,44 @@ describe('呼叫後端', () => {
     expect(calls[2].body).toEqual({ code: 'ABCD-EFGH' })
     expect(calls[2].headers['Content-Type']).toBe('application/json')
     expect(calls[0].headers['Content-Type']).toBeUndefined()
+  })
+
+  it('私聊的呼叫：路徑、CSRF 標頭與內容', async () => {
+    const calls = installFetch((call) =>
+      call.method === 'DELETE' ? { status: 204 } : { body: { conversations: [], turns: [], turn: turn() } },
+    )
+    const body = { request_id: 'r1', conversation_id: 'c1', member: 'm1', text: '你好' }
+    await api.listConversations()
+    await api.getConversation('c1')
+    await api.startTurn(body)
+    await api.getTurn('t1')
+    await api.interruptTurn('t1')
+    await api.deleteConversation('c1')
+    expect(calls.map((call) => [call.method, call.path, call.headers['X-Yiqunren-CSRF'], call.body])).toEqual([
+      ['GET', '/api/conversations', undefined, undefined],
+      ['GET', '/api/conversations/c1', undefined, undefined],
+      ['POST', '/api/turns', '1', body],
+      ['GET', '/api/turns/t1', undefined, undefined],
+      ['POST', '/api/turns/t1/interrupt', '1', undefined],
+      ['DELETE', '/api/conversations/c1', '1', undefined],
+    ])
+    expect(api.turnEventsPath('t1')).toBe('/api/turns/t1/events')
+    // 識別碼放進路徑前會編碼，不會被當成別的路徑。
+    expect(api.turnEventsPath('a/b?c')).toBe('/api/turns/a%2Fb%3Fc/events')
+  })
+
+  it('經過時間用伺服器的時鐘：依回應的 Date 標頭校正', async () => {
+    const hourAhead = Date.now() / 1000 + 3600
+    installFetch(() => ({ body: { paired: true } }), () => hourAhead)
+    await api.getSession()
+    expect(Math.abs(api.serverNow() - hourAhead)).toBeLessThan(2) // Date 標頭只到秒
+    // 沒有 Date 標頭或看不懂時，維持上一次的校正。
+    installFetch(() => ({ body: { paired: true }, headers: { Date: 'not a date' } }))
+    await api.getSession()
+    expect(Math.abs(api.serverNow() - hourAhead)).toBeLessThan(2)
+    installFetch(() => ({ body: { paired: true } }), () => Date.now() / 1000)
+    await api.getSession()
+    expect(Math.abs(api.serverNow() - Date.now() / 1000)).toBeLessThan(2)
   })
 
   it('沒有內容的回應（204）不當成錯誤', async () => {
