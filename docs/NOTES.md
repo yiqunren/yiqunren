@@ -27,7 +27,7 @@
 - 建議的下一步（建議，不是決定）：
   1. （已完成，`95e69a8` SPEC、`d34468c` 實作）FR-2 回覆長度上限：UTF-8 超過 100,000 位元組時回合失敗，分類 `reply_too_long`，回覆不存、不截斷；檢查在服務層 `save`。限制：橋接每次回覆是一行，單行上限 120,000 位元組（`cli_socket.MAX_RESPONSE`），橋接若回傳更大的一行，`worker_turn` 會當成連線失敗，回合變成「未知」而不是「回覆過長」；要明確告知得由橋接端自己先檢查 100,000 位元組並回報，做橋接與協定第 3 版時一起處理。
   2. 接 Codex 的真實轉接器。包住 `worker_turn` 的 `WorkerTurnRunner` 已經有了，剩下的是：
-     - 橋接程式從哪來（決定 3，還沒定）：repo 裡目前只有 `scripts/turn_host.py`（橋接共用的回合管理）與 `scripts/private_cli.py`，沒有可以啟動、監聽 socket 的橋接程式。
+     - 橋接程式從哪來（決定 3，2026-11-14 定案：先請規格側審查匯入舊專案的 `codex_host_bridge`，審查不過或依賴太多再改成本 repo 自己寫；審查結果還沒回來，見「仍待決定」）：repo 裡目前只有 `scripts/turn_host.py`（橋接共用的回合管理）與 `scripts/private_cli.py`，沒有可以啟動、監聽 socket 的橋接程式。
      - 把它接進設定與 `create_app`（成員、認證模式、`fields` 怎麼組：Codex 的欄位是 message、thread_id、workspace、model、effort）。
      - 橋接協定第 3 版加上結構化的錯誤分類（`error_kind`），才分得出 `timeout` 與 `internal_error`；目前橋接逾時回報為一般失敗，只能記成 `internal_error`。決定 1：等做橋接時一起加。
   3. FR-1 成員設定（讓逾時、模型、認證模式可以依成員設定）。
@@ -69,7 +69,7 @@
 ## 仍待決定
 
 - 下一步的順序是否照「主線狀態」的建議。
-- 橋接程式從哪來（決定 3，擁有者 2026-11-13 說之後再說）：本 repo 自己寫，或經規格側 session 依 `CLAUDE.md` 的匯入規則帶進來。在這個決定之前，真轉接器只能用測試裡的假橋接驗證。
+- 決定 3（橋接程式從哪來）已定案（擁有者 2026-11-14）：先由規格側 session 依 `CLAUDE.md` 的匯入規則審查舊專案的 `codex_host_bridge`（含它在所有層級依賴、本 repo 還沒有的模組，以及匯入 `tests/test_host_diagnostics.py`、`tests/test_private_cli_lifecycle.py` 時刪掉的 codex 相關測試）；審查先只回報、不複製，匯入要擁有者當輪另外同意。三項檢查有任一核心檔案不過，或依賴鏈超過 3 個尚未匯入的模組，就改成本 repo 自己寫（先查 Codex CLI 現行參數與 JSON 事件格式，橋接端 100,000 位元組檢查與協定第 3 版 `error_kind` 一起設計）。審查結果還沒回來；在這之前真轉接器只能用測試裡的假橋接驗證，實作側不自己去讀舊專案。
 - 狀態目錄 0700 檢查要不要對 `/mnt/*` 放寬（見上方待辦第 6 項）。
 - `docs/SPEC.md` 第 7 節第 6 項：美術素材來源（只有做 FR-11 才需要）。
 - 開始收費前要向原廠確認的事項：見 `docs/SPEC.md` 第 7 節第 4 項。
