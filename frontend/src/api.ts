@@ -90,6 +90,19 @@ export interface ConversationSummary {
 /** 擁有者一則訊息的長度上限（字數），和後端一致。 */
 export const MAX_MESSAGE_CHARS = 32_000
 
+// 連不上伺服器時隔多久再試（毫秒）；一直連不上就用最後一個間隔。
+const RETRY_DELAYS = [1000, 2000, 4000, 8000, 15000]
+
+/** 第 attempt 次（從 0 算起）再試之前要等多久（毫秒）。 */
+export function retryDelay(attempt: number): number {
+  return RETRY_DELAYS[Math.min(attempt, RETRY_DELAYS.length - 1)]
+}
+
+/** 連不上伺服器（不是伺服器回了錯誤）。 */
+export function isOffline(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 0
+}
+
 /** status 是 0 表示連不上伺服器。 */
 export class ApiError extends Error {
   readonly status: number

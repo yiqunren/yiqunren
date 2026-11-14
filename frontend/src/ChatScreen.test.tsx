@@ -89,6 +89,60 @@ describe('對話清單', () => {
   })
 })
 
+describe('讀取時連不上伺服器', () => {
+  function writes(calls: Call[]) {
+    return calls.filter((call) => call.method !== 'GET')
+  }
+
+  it('清單讀不到時顯示提示並在背景再讀；伺服器恢復後提示自動消失', async () => {
+    const { state, calls } = fakeBackend({ members: [member()], turns: [turn()] })
+    state.override = (call) => (call.path === '/api/conversations' ? 'offline' : undefined)
+    open('#/chat')
+    expect((await screen.findByRole('alert')).textContent).toBe(OFFLINE)
+    state.override = undefined
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull(), { timeout: 3000 })
+    expect(list().getByText('你好')).toBeTruthy()
+    expect(writes(calls)).toEqual([]) // 背景重讀只讀資料
+  })
+
+  it('對話內容讀不到時顯示提示並在背景再讀；伺服器恢復後顯示對話', async () => {
+    const { state, calls } = fakeBackend({ members: [member()], turns: [turn({ reply: '之前的回覆' })] })
+    state.override = (call) => (call.path === `/api/conversations/${C1}` ? 'offline' : undefined)
+    open(`#/chat/${C1}`)
+    expect((await screen.findByRole('alert')).textContent).toBe(OFFLINE)
+    state.override = undefined
+    await screen.findByText('之前的回覆', undefined, { timeout: 3000 })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(writes(calls)).toEqual([])
+  })
+
+  it('回合結束時更新清單失敗，伺服器恢復後提示自動消失', async () => {
+    const { state, finish } = fakeBackend({ members: [member()], turns: runningConversation() })
+    const sources = installEventSource()
+    open(`#/chat/${C1}`)
+    await attached()
+    state.override = (call) => (call.path === '/api/conversations' ? 'offline' : undefined)
+    finish(T2, { state: 'completed', reply: '答完了' })
+    act(() => sources[0].emit('done', { state: 'completed', error_kind: null, reply: '答完了' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(OFFLINE)
+    state.override = undefined
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull(), { timeout: 3000 })
+    expect(screen.getByText('答完了')).toBeTruthy()
+  })
+
+  it('離開私聊畫面後不再背景重讀', async () => {
+    const { state, calls } = fakeBackend({ members: [member()] })
+    state.override = (call) => (call.path === '/api/conversations' ? 'offline' : undefined)
+    open('#/chat')
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByRole('button', { name: '成員' }))
+    await screen.findByRole('button', { name: '新增成員' })
+    const before = calls.filter((call) => call.path === '/api/conversations').length
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    expect(calls.filter((call) => call.path === '/api/conversations').length).toBe(before)
+  })
+})
+
 describe('送出訊息', () => {
   it('新對話選成員送出，顯示執行中，收到回覆後以 Markdown 顯示', async () => {
     const { calls, finish } = fakeBackend({

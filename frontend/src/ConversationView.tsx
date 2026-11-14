@@ -12,9 +12,6 @@ const ERROR_LABELS: Record<string, string> = {
   internal_error: '內部錯誤',
 }
 
-// 事件連線斷掉後，隔多久再連（毫秒）；一直連不上就用最後一個間隔。
-const RETRY_DELAYS = [1000, 2000, 4000, 8000, 15000]
-
 function upsert(turns: api.Turn[], turn: api.Turn): api.Turn[] {
   return turns.some((item) => item.id === turn.id)
     ? turns.map((item) => (item.id === turn.id ? turn : item))
@@ -82,25 +79,37 @@ export function ConversationView({ conversationId, fresh, members, onChanged, on
       return
     }
     let cancelled = false
-    api.getConversation(conversationId).then(
-      (found) => {
-        if (!cancelled) {
-          setTurns(found)
-        }
-      },
-      (failure: unknown) => {
-        if (cancelled) {
-          return
-        }
-        if (failure instanceof api.ApiError && failure.status === 404) {
-          setMissing(true)
-        } else {
+    let timer: number | undefined
+    let attempt = 0
+    const fetchTurns = () => {
+      api.getConversation(conversationId).then(
+        (found) => {
+          if (!cancelled) {
+            setError(null)
+            setTurns(found)
+          }
+        },
+        (failure: unknown) => {
+          if (cancelled) {
+            return
+          }
+          if (failure instanceof api.ApiError && failure.status === 404) {
+            setMissing(true)
+            return
+          }
           fail(failure)
-        }
-      },
-    )
+          if (api.isOffline(failure)) {
+            // 連不上伺服器：稍後再讀，恢復後直接顯示對話。只讀資料，不重送任何東西。
+            timer = window.setTimeout(fetchTurns, api.retryDelay(attempt))
+            attempt += 1
+          }
+        },
+      )
+    }
+    fetchTurns()
     return () => {
       cancelled = true
+      window.clearTimeout(timer)
     }
   }, [conversationId, loaded, fail])
 
@@ -167,7 +176,7 @@ export function ConversationView({ conversationId, fresh, members, onChanged, on
         // 連不上伺服器或暫時性的錯誤：稍後再試。
       }
       setReconnecting(true)
-      timer = window.setTimeout(connect, RETRY_DELAYS[Math.min(attempt, RETRY_DELAYS.length - 1)])
+      timer = window.setTimeout(connect, api.retryDelay(attempt)) // 事件連線斷掉後稍後再連
       attempt += 1
     }
 
