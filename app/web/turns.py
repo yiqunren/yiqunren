@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from pathlib import Path
 import time
 from typing import Annotated
 
@@ -19,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from collections.abc import Mapping
 
 from app.services.turn_contract import request_id as checked_uuid
-from app.storage import db, members, requests, turns
+from app.storage import db, members, requests, turns, workspaces
 from app.web.runner import Failed, Hooks, Interrupted, TurnInput, Unknown
 
 
@@ -76,6 +77,7 @@ class TurnService:
 
     def __init__(self, db_path, runner, *, timeout: float | None = None, clock=time.time):
         self.db_path, self.runner, self.timeout, self.clock = db_path, runner, timeout, clock
+        self.state_dir = Path(db_path).parent  # 資料庫放在狀態目錄裡；對話的工作目錄也在這裡（NFR-7）
         self._running: dict[str, asyncio.Task] = {}
         self._versions: dict[str, int] = {}
         self._waiters: dict[str, asyncio.Event] = {}
@@ -164,6 +166,7 @@ class TurnService:
             turns.insert_running(connection, body.request_id, body.conversation_id, body.member, body.text, now,
                                  member_name=member['name'], adapter=member['adapter'])
             picked['member'] = member
+            picked['session'] = turns.latest_session(connection, body.conversation_id)
 
         connection = self._connect()
         try:
@@ -189,7 +192,8 @@ class TurnService:
             turn = TurnInput(body.request_id, body.conversation_id, body.member, body.text,
                              self.timeout if self.timeout is not None else member['timeout'],
                              adapter=member['adapter'], model=member['model'], effort=member['effort'],
-                             auth_mode=member['auth_mode'])
+                             auth_mode=member['auth_mode'], session=picked['session'],
+                             workspace=str(workspaces.path(self.state_dir, body.conversation_id)))
             runner = self.runner_for(member['adapter'])
             self._spawn(body.request_id, lambda hooks: runner.run(turn, hooks))
             return 202, {'turn': snapshot(row)}
@@ -247,6 +251,12 @@ class TurnService:
             if deleted and not db.truncate_wal(connection):
                 # 有其他連線正在讀；WAL 裡的舊內容會在之後的檢查點清掉。
                 logger.warning('刪除對話後 WAL 未能立即清空')
+            if deleted:
+                # NFR-7：工作目錄跟著對話一起刪；刪不掉只記一行警告（對話紀錄已經刪掉）。
+                try:
+                    workspaces.remove(self.state_dir, conversation_id)
+                except OSError as exc:
+                    logger.warning('刪除對話的工作目錄失敗：%s', type(exc).__name__)
             return deleted
         finally:
             connection.close()
@@ -281,17 +291,19 @@ class TurnService:
                 connection.close()
             self._bump(turn_id)
 
-        def save(reply: str) -> None:
+        def save(reply: str, session: str | None = None) -> None:
             nonlocal settled
             if not isinstance(reply, str):
                 raise TypeError('回覆必須是文字')
+            if session is not None and (not isinstance(session, str) or not session):
+                raise TypeError('對話身分必須是文字')
             size = len(reply.encode('utf-8'))
             if size > MAX_REPLY_BYTES:
                 # FR-2：明確告知、不截斷，回覆一個字都不存。照常返回，轉接器可以讓遠端丟掉回覆。
                 logger.warning('回合 %s 失敗：回覆過長（%d 位元組）', turn_id, size)
                 result = {'state': turns.FAILED, 'error_kind': turns.REPLY_TOO_LONG}
             else:
-                result = {'state': turns.COMPLETED, 'reply': reply}
+                result = {'state': turns.COMPLETED, 'reply': reply, 'session': session}
             if not self._finish(turn_id, **result):
                 # 沒寫進去就不能讓轉接器通知遠端丟掉回覆。
                 raise RuntimeError('回合已不在進行中，結果沒有存下')

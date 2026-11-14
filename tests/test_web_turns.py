@@ -519,6 +519,60 @@ class TurnApiTest(unittest.TestCase):
         row = client.get('/api/turns/' + body['request_id']).json()['turn']
         self.assertEqual((row['member_name'], row['adapter']), ('Grok 深度', 'grok'))
 
+    def test_session_continues_from_latest_completed_turn_and_workspace_is_per_conversation(self):
+        class SessionRunner(Runner):
+            seen, sessions = [], ['s-1', None, 's-3']
+
+            async def run(self, turn, hooks):
+                SessionRunner.seen.append(turn)
+                session = SessionRunner.sessions[len(SessionRunner.seen) - 1]
+                if turn.message == 'fail':
+                    raise RuntimeError('boom')
+                hooks.save('ok', session=session)
+
+        client = self.client(runner=SessionRunner())
+        conversation = str(uuid.uuid4())
+        for text in ('first', 'fail', 'third', 'fourth'):
+            body = self.body(conversation_id=conversation, text=text)
+            client.post('/api/turns', json=body)
+            read_events(client, body['request_id'])
+        other = self.body()
+        client.post('/api/turns', json=other)
+        read_events(client, other['request_id'])
+        # 第二回合失敗（不存身分），第三回合接第一回合的身分；第三回合存了 s-3，第四回合用它
+        self.assertEqual([turn.session for turn in SessionRunner.seen], [None, 's-1', 's-1', 's-3', None])
+        workspace = self.settings.state_dir / 'workspaces' / conversation
+        self.assertEqual({turn.workspace for turn in SessionRunner.seen[:4]}, {str(workspace)})
+        self.assertEqual(SessionRunner.seen[4].workspace,
+                         str(self.settings.state_dir / 'workspaces' / other['conversation_id']))
+
+    def test_delete_conversation_removes_its_workspace_only(self):
+        client = self.client(runner=ReplyRunner('ok'))
+        body, other = self.body(), self.body()
+        for item in (body, other):
+            client.post('/api/turns', json=item)
+            read_events(client, item['request_id'])
+        root = self.settings.state_dir / 'workspaces'
+        workspace, kept = root / body['conversation_id'], root / other['conversation_id']
+        for directory in (workspace, kept):
+            (directory / 'sub').mkdir(parents=True)
+            (directory / 'sub' / 'note.md').write_text('x')
+        self.assertEqual(client.delete('/api/conversations/' + body['conversation_id']).status_code, 204)
+        self.assertFalse(workspace.exists())
+        self.assertTrue((kept / 'sub' / 'note.md').exists())
+        # 沒有建立過工作目錄的對話照常刪除
+        self.assertEqual(client.delete('/api/conversations/' + other['conversation_id']).status_code, 204)
+        third = self.body()
+        client.post('/api/turns', json=third)
+        read_events(client, third['request_id'])
+        self.assertEqual(client.delete('/api/conversations/' + third['conversation_id']).status_code, 204)
+
+    def test_bridges_setting_connects_claude_code_only(self):
+        settings = Settings('127.0.0.1', 8420, self.settings.state_dir, bridges=('claude_code',))
+        with PairedClient(create_app(settings)) as client:
+            available = {entry['code']: entry['available'] for entry in client.get('/api/adapters').json()['adapters']}
+        self.assertEqual(available, {'codex': False, 'grok': False, 'claude_code': True})
+
     def test_missing_or_disabled_member_is_refused_and_nothing_is_stored(self):
         client = self.client()
         disabled = add_member(self.settings.state_dir, enabled=False)

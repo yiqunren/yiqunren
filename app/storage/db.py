@@ -90,6 +90,10 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         ' last_used REAL NOT NULL'
         ')',
     ),
+    (
+        # NFR-7：轉接器那一家的對話身分（例如 Claude Code 的 session ID），只在完成的回合存，供下一個回合續接。
+        'ALTER TABLE turns ADD COLUMN provider_session TEXT',
+    ),
 )
 SCHEMA_VERSION = len(MIGRATIONS)
 

@@ -37,6 +37,36 @@ class TurnStoreTest(unittest.TestCase):
         row = turns.get(self.connection, turn_id)
         self.assertEqual((row['state'], row['reply'], row['finished']), ('completed', 'ok', 3.0))
 
+    def test_session_is_kept_only_for_completed_turns_and_latest_completed_wins(self):
+        self.assertIsNone(turns.latest_session(self.connection, self.conversation))
+        first = self.start()
+        self.assertTrue(turns.finish(self.connection, first, turns.COMPLETED, 1.0, reply='a', session='s-1'))
+        self.assertEqual(turns.get(self.connection, first)['provider_session'], 's-1')
+        self.assertEqual(turns.latest_session(self.connection, self.conversation), 's-1')
+        failed = self.start()
+        self.assertTrue(turns.finish(self.connection, failed, turns.FAILED, 2.0, error_kind=turns.INTERNAL_ERROR))
+        self.assertEqual(turns.latest_session(self.connection, self.conversation), 's-1')  # 失敗的回合不算
+        second = self.start()
+        self.assertTrue(turns.finish(self.connection, second, turns.COMPLETED, 3.0, reply='b', session='s-2'))
+        self.assertEqual(turns.latest_session(self.connection, self.conversation), 's-2')
+        third = self.start()
+        self.assertTrue(turns.finish(self.connection, third, turns.COMPLETED, 4.0, reply='c'))
+        self.assertIsNone(turns.latest_session(self.connection, self.conversation))  # 不退回更早的身分
+        self.assertIsNone(turns.latest_session(self.connection, str(uuid.uuid4())))
+        other = self.start(conversation=str(uuid.uuid4()))
+        self.assertTrue(turns.finish(self.connection, other, turns.COMPLETED, 5.0, reply='d', session='s-9'))
+        self.assertIsNone(turns.latest_session(self.connection, self.conversation))
+
+    def test_session_is_rejected_unless_completed(self):
+        turn_id = self.start()
+        for state, kwargs in ((turns.FAILED, {'error_kind': turns.INTERNAL_ERROR}), (turns.INTERRUPTED, {}),
+                              (turns.UNKNOWN, {}), (turns.COMPLETED, {'reply': 'x', 'session': ''}),
+                              (turns.COMPLETED, {'reply': 'x', 'session': 5})):
+            kwargs.setdefault('session', 's-1')
+            with self.subTest(state=state, kwargs=kwargs), self.assertRaises(ValueError):
+                turns.finish(self.connection, turn_id, state, 1.0, **kwargs)
+        self.assertEqual(turns.get(self.connection, turn_id)['state'], 'running')
+
     def test_finished_turn_is_not_changed_again(self):
         turn_id = self.start()
         self.assertTrue(turns.finish(self.connection, turn_id, turns.FAILED, 1.0, error_kind=turns.INTERNAL_ERROR))

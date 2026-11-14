@@ -68,6 +68,15 @@ def conversation(connection: sqlite3.Connection, conversation_id: str) -> list[s
                               (conversation_id,)).fetchall()
 
 
+def latest_session(connection: sqlite3.Connection, conversation_id: str) -> str | None:
+    """這段對話最近一個完成的回合存下的轉接器對話身分（NFR-7 續接）。
+    沒有完成的回合、或最近完成的回合沒有身分時是 None（從新的對話開始），不退回更早的回合。"""
+    row = connection.execute('SELECT provider_session FROM turns WHERE conversation_id = ? AND state = ?'
+                             ' ORDER BY started DESC, rowid DESC LIMIT 1',
+                             (conversation_id, COMPLETED)).fetchone()
+    return None if row is None else row['provider_session']
+
+
 def conversations(connection: sqlite3.Connection) -> list[dict]:
     """所有對話的摘要，最近有活動的排前面。成員與狀態取自最後一個回合，標題取自第一則訊息的開頭。"""
     rows = connection.execute('SELECT conversation_id, member, member_name, state, started, finished,'
@@ -170,27 +179,32 @@ def recorded_running(connection: sqlite3.Connection) -> list[tuple[str, str, str
         ' ORDER BY started, rowid', (RUNNING,))]
 
 
-def _finish_in_transaction(connection, turn_id, state, now, reply, error_kind) -> bool:
-    updated = connection.execute('UPDATE turns SET state = ?, reply = ?, error_kind = ?, finished = ?'
-                                 ' WHERE id = ? AND state = ?',
-                                 (state, reply, error_kind, now, turn_id, RUNNING)).rowcount
+def _finish_in_transaction(connection, turn_id, state, now, reply, error_kind, session=None) -> bool:
+    updated = connection.execute('UPDATE turns SET state = ?, reply = ?, error_kind = ?, finished = ?,'
+                                 ' provider_session = ? WHERE id = ? AND state = ?',
+                                 (state, reply, error_kind, now, session, turn_id, RUNNING)).rowcount
     if updated:
         _append(connection, turn_id, DONE, {'state': state, 'error_kind': error_kind}, now)
     return bool(updated)
 
 
 def finish(connection: sqlite3.Connection, turn_id: str, state: str, now: float, *,
-           reply: str | None = None, error_kind: str | None = None) -> bool:
-    """把進行中的回合標為結束並寫入 done 事件；回合不是進行中時不動，回傳 False。"""
+           reply: str | None = None, error_kind: str | None = None, session: str | None = None) -> bool:
+    """把進行中的回合標為結束並寫入 done 事件；回合不是進行中時不動，回傳 False。
+
+    session 是轉接器那一家的對話身分（例如 Claude Code 的 session ID），只有完成的回合才存，
+    同一段對話的下一個回合用它續接（NFR-7）。"""
     if state not in FINAL_STATES:
         raise ValueError('結束狀態無效')
     if (state == COMPLETED) != (reply is not None):
         raise ValueError('只有完成的回合有回覆')
     if (state == FAILED) != (error_kind is not None) or (error_kind is not None and error_kind not in ERROR_KINDS):
         raise ValueError('失敗原因無效')
+    if session is not None and (state != COMPLETED or not isinstance(session, str) or not session):
+        raise ValueError('只有完成的回合有對話身分')
     connection.execute('BEGIN IMMEDIATE')
     try:
-        done = _finish_in_transaction(connection, turn_id, state, now, reply, error_kind)
+        done = _finish_in_transaction(connection, turn_id, state, now, reply, error_kind, session)
         connection.execute('COMMIT')
     except BaseException:
         connection.execute('ROLLBACK')

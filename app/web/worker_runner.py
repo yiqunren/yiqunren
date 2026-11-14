@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 import logging
+import re
 from typing import Callable
 
 from app.services import adapters, worker_turn
@@ -66,7 +67,7 @@ class WorkerTurnRunner(Runner):
                     result = await worker_turn.run(self.provider, self.fields(turn), auth_mode=turn.auth_mode,
                                                    on_progress=hooks.progress)
                 # 區塊正常結束（save 成功）後 tracked 才送 turn_ack；save 失敗就不 ack，橋接保留回覆。
-                hooks.save(_content(result))
+                hooks.save(_content(result), session=_session(result))
         finally:
             self._tracks.pop(turn.turn_id, None)
             self._pending.discard(turn.turn_id)
@@ -85,7 +86,7 @@ class WorkerTurnRunner(Runner):
                     except Exception:
                         logger.warning('回合 %s 的中斷要求未能送達橋接', turn_id)
                 result = await worker_turn.observe(handle, on_progress=hooks.progress)
-            hooks.save(_content(result))
+            hooks.save(_content(result), session=_session(result))
         finally:
             self._handles.pop(turn_id, None)
             self._pending.discard(turn_id)
@@ -108,6 +109,15 @@ def _content(result) -> str:
     if not isinstance(content, str):
         raise Failed(INTERNAL_ERROR)
     return content
+
+
+SESSION = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}')
+
+
+def _session(result) -> str | None:
+    """橋接回報的該家對話身分（NFR-7 續接）；沒有或格式不對就當沒有，不影響回覆。"""
+    session = result.get('session') if isinstance(result, dict) else None
+    return session if isinstance(session, str) and SESSION.fullmatch(session) else None
 
 
 @contextmanager

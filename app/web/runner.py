@@ -32,7 +32,8 @@ hooks：
   只放接回所需的身分，不放訊息、回覆或憑證。可以在其他執行緒呼叫（只寫資料庫）；
   失敗時會丟例外，執行者應要求遠端停止這一回合並丟 Unknown。
 - progress(item)：送出進度，只放可以公開的資訊。必須在事件迴圈的執行緒呼叫。
-- save(reply)：見上。必須在事件迴圈的執行緒呼叫。
+- save(reply, session=None)：見上。必須在事件迴圈的執行緒呼叫。session 是該家的對話身分（可省略），
+  只在回合完成時存下，同一段對話的下一個回合從 TurnInput.session 取回。
 
 resume：用 began 存下的 record 接回上次執行中的回合，結果照 run 的方式回報。
 不支援接回的執行者不必實作（預設丟 NotImplementedError，回合標為未知）。
@@ -55,13 +56,18 @@ class TurnInput:
     model: str = ''  # 空白表示用該家預設
     effort: str | None = None
     auth_mode: str = ''
+    # 這段對話最近一個完成回合的對話身分（NFR-7 續接）；None 表示從新的對話開始。
+    session: str | None = None
+    # 這段對話的工作目錄（絕對路徑，NFR-7）；需要的轉接器自己建立，系統在刪除對話時刪除。
+    workspace: str = ''
 
 
 @dataclass(frozen=True)
 class Hooks:
     began: Callable[[dict], None]
     progress: Callable[[dict], None]
-    save: Callable[[str], None]
+    # save(reply, session=None)：session 是轉接器那一家的對話身分，下一個回合以 TurnInput.session 帶回（NFR-7）。
+    save: Callable[..., None]
 
 
 class Interrupted(Exception):

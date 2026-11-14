@@ -6,6 +6,8 @@ import ipaddress
 import os
 from pathlib import Path
 
+from app.services import adapters
+
 
 DEFAULT_HOST = '127.0.0.1'
 DEFAULT_PORT = 8420
@@ -22,6 +24,8 @@ class Settings:
     state_dir: Path
     # 開發用：私聊回合改由假轉接器回覆，不呼叫任何 AI。
     fake_turns: bool = False
+    # 要接上的轉接器橋接（轉接器代號，NFR-7）；空的表示不接任何橋接，成員顯示「未接上」。
+    bridges: tuple[str, ...] = ()
 
 
 def default_state_dir(env) -> Path:
@@ -64,4 +68,13 @@ def load(env=None) -> Settings:
     if raw_fake not in ('', '0', '1'):
         raise ConfigError('YIQUNREN_FAKE_TURNS 只能是 0 或 1')
 
-    return Settings(host=host, port=int(raw_port), state_dir=state_dir, fake_turns=raw_fake == '1')
+    bridges = tuple(code.strip() for code in env.get('YIQUNREN_BRIDGES', '').split(',') if code.strip())
+    for code in bridges:
+        if not adapters.is_registered(code):
+            raise ConfigError('YIQUNREN_BRIDGES 有未登記的轉接器代號')
+    if len(set(bridges)) != len(bridges):
+        raise ConfigError('YIQUNREN_BRIDGES 有重複的轉接器代號')
+    if bridges and raw_fake == '1':
+        raise ConfigError('YIQUNREN_FAKE_TURNS 與 YIQUNREN_BRIDGES 不能同時設定')
+
+    return Settings(host=host, port=int(raw_port), state_dir=state_dir, fake_turns=raw_fake == '1', bridges=bridges)

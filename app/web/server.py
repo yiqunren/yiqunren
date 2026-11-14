@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.storage import db
-from app.web import config, members, security, turns
+from app.web import bridges, config, members, security, turns
 from app.web.fake_runner import FakeRunner
 
 
@@ -31,6 +31,8 @@ def create_app(settings: config.Settings | None = None, *, runner=None,
     static_dir = STATIC_DIR if static_dir is None else Path(static_dir)
     if runner is None and settings.fake_turns:
         runner = FakeRunner()
+    if runner is None and settings.bridges:
+        runner = bridges.runners(settings.bridges, settings.state_dir)  # NFR-7：接上設定的轉接器橋接
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

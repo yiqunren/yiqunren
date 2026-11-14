@@ -113,7 +113,7 @@ class Bridge:
 
 class Recorder:
     def __init__(self, fail_began=False, fail_save=False, on_save=None):
-        self.records, self.progress, self.replies = [], [], []
+        self.records, self.progress, self.replies, self.sessions = [], [], [], []
         self.fail_began, self.fail_save, self.on_save = fail_began, fail_save, on_save
 
     def began(self, record):
@@ -121,12 +121,13 @@ class Recorder:
             raise OSError('disk full')
         self.records.append(record)
 
-    def save(self, reply):
+    def save(self, reply, session=None):
         if self.on_save is not None:
             self.on_save()
         if self.fail_save:
             raise OSError('disk full')
         self.replies.append(reply)
+        self.sessions.append(session)
 
     def hooks(self):
         return Hooks(self.began, self.progress.append, self.save)

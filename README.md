@@ -10,7 +10,7 @@
 
 **早期開發中，還不能給一般使用者使用。**
 
-目前有核心的協定、資料驗證、本機元件與後端 API，以及對應的測試。網頁介面有配對、成員設定與私聊三個畫面，群聊還沒做；沒有安裝包，實際呼叫各家 AI CLI 的橋接程式也還沒完成。
+目前有核心的協定、資料驗證、本機元件與後端 API，以及對應的測試。網頁介面有配對、成員設定與私聊三個畫面，群聊還沒做；沒有安裝包。各家 AI CLI 的橋接程式目前只有 Claude Code（API key 模式），Codex 與 Grok 還沒完成。
 
 ## 想做到什麼
 
@@ -127,11 +127,38 @@ npm run build             # 型別檢查，並打包到 ../app/web/static/
 | `YIQUNREN_PORT` | 監聽的埠 | `8420` |
 | `YIQUNREN_STATE_DIR` | 狀態資料庫目錄（絕對路徑，權限必須是 0700） | `~/.local/state/yiqunren` |
 | `YIQUNREN_FAKE_TURNS` | 設成 `1` 時，私聊回合改由假轉接器回覆（只供開發） | `0` |
+| `YIQUNREN_BRIDGES` | 要接上的轉接器橋接，逗號分隔的轉接器代號；目前只有 `claude_code` 有橋接。不能和 `YIQUNREN_FAKE_TURNS=1` 同時設 | 不接任何橋接 |
 | `YIQUNREN_WRITE_REGISTRY` | 寫入權登記庫的檔案路徑（絕對路徑，不能經符號連結，所在目錄權限必須是 0700）；空字串視同沒設 | 狀態目錄裡的 `write-ownership.sqlite3` |
 
 寫入權登記庫記錄哪個成員正在寫哪個專案範圍（同一範圍同時只允許一個成員寫入，見 `docs/SPEC.md` 的 NFR-2），預設和狀態資料庫放在同一個目錄，不放在 repo 底下。目前只有橋接的回合管理（`scripts/turn_host.py`）和命令列工具 `scripts/write_ownership.py` 會用到，後端還沒有接上。找不到狀態目錄（例如沒有家目錄、也沒設 `YIQUNREN_STATE_DIR`）時，寫入權工具會回報錯誤並禁止開始寫入。
 
 資料庫與登記庫建議放在 Linux 檔案系統上；放在 WSL 的 `/mnt/*` 底下會變慢，也不要讓 Windows 端的程式同時開這些檔。
+
+### Claude Code 橋接（API key 模式）
+
+橋接是另外啟動的本機程序，執行你自己安裝的官方 Claude Code CLI（`claude`）。每一回合都會用你的 API key 呼叫 Anthropic，費用由你支付。
+
+```bash
+# 另開一個終端機，在 repo 根目錄；ANTHROPIC_API_KEY 由你自己在這個環境設定
+.venv/bin/python -m scripts.claude_bridge
+# 後端這邊
+YIQUNREN_BRIDGES=claude_code .venv/bin/python -m app.web
+```
+
+- 沒有設定 `ANTHROPIC_API_KEY`、找不到 `claude`，或 socket 已經有另一個橋接在用時，橋接拒絕啟動。橋接只檢查 key 有沒有設，不讀出、不記錄它的值。
+- CLI 以精簡模式（`--bare`）執行，不載入你個人的 Claude Code 設定（hooks、外掛、MCP、CLAUDE.md、自動記憶），也不用你的訂閱登入。
+- 每段對話有自己的空白工作目錄（狀態目錄底下的 `workspaces/<對話 ID>`），刪除對話時一併刪除。Claude Code 可以在裡面建立、修改檔案，不能執行任何指令，也不能讀寫工作目錄以外的檔案。
+- 同一段對話的下一個回合會接續最近一個完成的回合在 Claude Code 裡的對話。
+- 回合失敗時，畫面只顯示固定訊息與診斷 ID，詳細內容寫在本機的診斷檔（遮罩後的 stderr 尾段與事件類型，不含回覆正文）。
+- 目前不設單回合的花費上限。
+- 橋接和後端要用同一個狀態目錄（`YIQUNREN_STATE_DIR` 或預設位置）。
+
+| 環境變數（橋接） | 用途 | 預設 |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | 你的 Anthropic API key（必填） | 無 |
+| `YIQUNREN_CLAUDE_BIN` | `claude` 執行檔的絕對路徑 | 從 `PATH` 找 |
+| `YIQUNREN_CLAUDE_CODE_SOCKET` | 橋接的 socket 路徑（絕對路徑；後端也讀同一個變數） | `$XDG_RUNTIME_DIR/yiqunren/claude_code.sock` |
+| `YIQUNREN_CLAUDE_CODE_MAX_TIMEOUT` | 單回合最長秒數（60～3600） | `3600` |
 
 ## 憑證與費用
 

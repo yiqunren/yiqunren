@@ -46,6 +46,19 @@ class ConfigTest(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ConfigError):
                 load({**HOME, 'YIQUNREN_FAKE_TURNS': value})
 
+    def test_bridges(self):
+        self.assertEqual(load(dict(HOME)).bridges, ())
+        self.assertEqual(load({**HOME, 'YIQUNREN_BRIDGES': ''}).bridges, ())
+        self.assertEqual(load({**HOME, 'YIQUNREN_BRIDGES': ' claude_code , '}).bridges, ('claude_code',))
+        self.assertEqual(load({**HOME, 'YIQUNREN_BRIDGES': 'codex,claude_code'}).bridges, ('codex', 'claude_code'))
+        for env in ({'YIQUNREN_BRIDGES': 'claude'}, {'YIQUNREN_BRIDGES': 'claude_code,claude_code'},
+                    {'YIQUNREN_BRIDGES': 'claude_code', 'YIQUNREN_FAKE_TURNS': '1'}):
+            with self.subTest(env=env), self.assertRaises(ConfigError):
+                load({**HOME, **env})
+        # 只設 YIQUNREN_FAKE_TURNS=0 不算衝突
+        self.assertEqual(load({**HOME, 'YIQUNREN_BRIDGES': 'claude_code', 'YIQUNREN_FAKE_TURNS': '0'}).bridges,
+                         ('claude_code',))
+
     def test_missing_home_requires_explicit_state_dir(self):
         with self.assertRaises(ConfigError):
             load({})
