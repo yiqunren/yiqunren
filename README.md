@@ -10,7 +10,7 @@
 
 **早期開發中，還不能給一般使用者使用。**
 
-目前只有核心的協定、資料驗證與本機元件，以及對應的測試。還沒有網頁介面、沒有安裝包，實際呼叫各家 AI CLI 的橋接程式也還沒完成。
+目前有核心的協定、資料驗證、本機元件與後端 API，以及對應的測試。網頁介面只有配對與成員設定兩個畫面，還不能聊天；沒有安裝包，實際呼叫各家 AI CLI 的橋接程式也還沒完成。
 
 ## 想做到什麼
 
@@ -51,7 +51,7 @@ uv sync
 .venv/bin/pytest
 ```
 
-啟動後端（還沒有網頁介面，也還沒接上真的 AI）：
+啟動後端（還沒接上真的 AI）：
 
 ```bash
 .venv/bin/python -m app.web
@@ -64,7 +64,7 @@ uv sync
 .venv/bin/python -m app.web unpair   # 撤銷所有已配對的瀏覽器
 ```
 
-還沒有網頁介面，可以先用 curl 試（`-c`、`-b` 讀寫 Cookie 檔；這個檔等於登入憑證，用完要刪掉）：
+不用網頁介面時，也可以用 curl 呼叫 API（`-c`、`-b` 讀寫 Cookie 檔；這個檔等於登入憑證，用完要刪掉）：
 
 ```bash
 curl -c cookies.txt -H 'X-Yiqunren-CSRF: 1' -H 'Content-Type: application/json' \
@@ -72,10 +72,26 @@ curl -c cookies.txt -H 'X-Yiqunren-CSRF: 1' -H 'Content-Type: application/json' 
 curl -b cookies.txt http://127.0.0.1:8420/api/members
 ```
 
+### 網頁介面
+
+網頁介面的原始碼在 `frontend/`（React＋TypeScript＋Vite），目前只有配對與成員設定兩個畫面。打包需要 Node.js 與 npm：Vite 8 要 Node.js 20.19 以上或 22.12 以上，目前只在 Node.js 22 上測過。打包後的檔案放在 `app/web/static/`（不進 Git），由後端提供。
+
+```bash
+cd frontend
+npm ci --ignore-scripts   # 照 package-lock.json 安裝依賴，不執行套件的安裝腳本
+npm test                  # 元件測試，不連網路、不需要後端
+npm run build             # 型別檢查，並打包到 ../app/web/static/
+```
+
+打包後啟動後端，用瀏覽器開 `http://127.0.0.1:8420/`，輸入配對碼就能設定成員。沒打包時，`/` 會回 404 並說明要先打包。
+
+開發網頁介面時可以用 Vite 開發伺服器，改完程式畫面會立即更新：先啟動後端，再到 `frontend/` 執行 `npm run dev`，用瀏覽器開 `http://127.0.0.1:5173/`。開發伺服器把 `/api` 轉給後端，轉送時把 `Host` 與 `Origin` 改成後端的位址，所以後端的安全檢查不必放寬。這個改寫只寫在開發設定 `frontend/vite.config.ts` 裡，打包後的正式版不經過它。
+
 所有請求都要通過以下安全檢查：
 
 - 只接受用 IP 位址或 `localhost` 加上設定的埠連線；用其他主機名稱連線回 400。
-- 除了 `GET /api/health`、`POST /api/pair`、`GET /api/session`、`DELETE /api/session`，都要先配對，讀取與 SSE 也一樣，否則回 401。Cookie 連續 30 天沒使用就失效。
+- 除了 `GET /api/health`、`POST /api/pair`、`GET /api/session`、`DELETE /api/session`，API 都要先配對，讀取與 SSE 也一樣，否則回 401。Cookie 連續 30 天沒使用就失效。網頁介面本身的檔案（`/api/` 以外的路徑，只能讀取）不必配對，否則配對畫面顯示不出來。
+- 所有回應都帶安全標頭：內容安全政策只允許載入本站的程式、樣式與連線，禁止行內程式碼與被其他網站嵌入；另有 `X-Content-Type-Options: nosniff` 與 `Referrer-Policy: same-origin`。
 - GET、HEAD 以外的請求要帶 `X-Yiqunren-CSRF: 1` 標頭；帶了 `Origin` 或 `Sec-Fetch-Site` 時必須是同源，否則回 403。
 - 請求本體上限 512 KiB，超過回 413。
 - 改變狀態的請求合計每分鐘最多 60 次，其中送出回合每分鐘最多 20 次；超過回 429，`Retry-After` 標頭告知幾秒後可以再試。
