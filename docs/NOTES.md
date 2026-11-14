@@ -44,9 +44,40 @@
     - 頻率計數只在伺服器行程的記憶體裡，重啟就重新計算。
     - Cookie 不分埠，本機其他埠的網頁伺服器也收得到（瀏覽器規則）；Cookie 名稱帶埠號只避免兩個實例互相蓋掉。開放到其他網路時走 HTTP，同網路的人可能看到 Cookie，要另外處理 HTTPS，不在 MVP 範圍（SPEC 已寫）。
     - 啟動時「還沒有配對任何瀏覽器」的提示只在實機確認過（8420、假轉接器），沒有自動測試。
-    - 推論，尚未驗證：前端開發若用 Vite 開發伺服器（不同埠），請求的 `Origin` 會和 `Host` 不同而被擋；做前端時要決定怎麼處理，同時要確保 `fetch` 帶 CSRF 標頭（SSE 的 GET 不需要）。
-  - 沒做：前端的配對畫面；HTTPS。
-- 截至 2026-11-14：`0197247` 是最新的程式 commit；`pytest` 結果 365 passed（`-W error`）。推送現況以 `git status` 為準，筆記更新不一定已推送。還沒有網頁介面、橋接程式（見下方建議第 2 項）。
+    - Vite 開發伺服器跨埠會被來源檢查擋下的問題，已在做網頁介面時處理並實測，見下方「網頁介面骨架」。
+  - 沒做：HTTPS。（配對畫面已在網頁介面骨架完成。）
+- 網頁介面骨架（2026-11-14，`f23eb7a` SPEC、`7a505f3` 後端、`79908d9` 前端）：
+  - SPEC NFR-3 補了兩條：網頁介面本身的檔案（`/api/` 以外的路徑，只能讀取，不含使用者資料）不必配對，否則配對畫面顯示不出來；所有回應都帶安全標頭。
+  - 後端（`app/web/security.py`、`app/web/server.py`）：
+    - `Guard` 對 `/api/` 以外的 GET、HEAD 不檢查配對；改變狀態的請求與 `/api/` 照舊要配對，Host 檢查照舊。
+    - 所有回應（含被擋下的）加上 `Content-Security-Policy`（只允許本站的程式、樣式與連線，禁止行內程式碼、`object`、被其他網站嵌入）、`X-Content-Type-Options: nosniff`、`Referrer-Policy: same-origin`。不用 `no-referrer`：依 Fetch 規格，瀏覽器會把同源 POST 的 `Origin` 送成 `null`，被 CSRF 檢查擋下（依規格判斷，沒有用瀏覽器實測）。
+    - 打包結果放在 `app/web/static/`（已加進 `.gitignore`），由 Starlette `StaticFiles` 提供，掛在所有 API 路由之後；沒打包時 `/` 回 404 並說明要先打包。`create_app(static_dir=)` 只供測試換目錄。
+  - 前端 `frontend/`（React 19＋TypeScript＋Vite 8，檔案全部手寫，沒用官方範本）：
+    - `src/api.ts`：呼叫後端；GET 以外才帶 `X-Yiqunren-CSRF: 1`；Cookie 只對同源送（`credentials: 'same-origin'`）；錯誤轉成給擁有者看的一句話，429 依 `Retry-After` 告知秒數。請求 ID 自己產生 UUID 第 4 版，不用 `crypto.randomUUID`，因為它只在安全環境（HTTPS 或本機）可用。
+    - `src/App.tsx`：查配對狀態，決定顯示配對畫面或成員畫面；配對失效（401）時回到配對畫面並說明；可登出這個瀏覽器。
+    - `src/PairingScreen.tsx`：配對碼輸入，顯示取得配對碼的指令。
+    - `src/MembersScreen.tsx`、`src/MemberForm.tsx`：成員列表（狀態、停用、轉接器未接上或已移除）、新增、修改（只送有改的欄位；轉接器不能改）、停用或啟用、刪除（先確認）。欄位依 `GET /api/adapters` 決定，選訂閱 CLI 時顯示服務條款提示。新增時同樣內容重送沿用同一個請求 ID（NFR-1），內容改了才換新的。
+    - 所有文字都當純文字顯示，沒有 `dangerouslySetInnerHTML`。
+  - 依賴與打包：
+    - 11 個直接依賴（`react`、`react-dom`、`vite`、`@vitejs/plugin-react`、`typescript`、`@types/react`、`@types/react-dom`、`vitest`、`jsdom`、`@testing-library/react`、`@testing-library/dom`），含相依共 87 個套件，都從 npm 官方 registry 安裝（擁有者 2026-11-14 授權）；`package-lock.json` 在本 repo 產生，裡面的來源全部是官方 registry。`node_modules/` 不進 Git。
+    - 步驟：在 `frontend/` 執行 `npm ci --ignore-scripts`（不執行套件的安裝腳本）、`npm test`、`npm run build`（型別檢查後打包到 `../app/web/static/`）。在暫存目錄照鎖檔乾淨安裝驗證過：測試通過、打包成功。
+    - 只在 Node.js 22.23.4、npm 10.9.9 上測過；Vite 8 要 Node.js 20.19 以上或 22.12 以上。
+  - Vite 開發伺服器（`npm run dev`，127.0.0.1:5173）：`/api` 轉給後端，轉送時把 `Host` 與 `Origin` 改成後端的位址（只在 `vite.config.ts`，正式版不經過）。另外設 `cors: false`：Vite 預設會替本機其他埠的網頁回應 CORS 預檢並放行自訂標頭，等於削弱 CSRF 的自訂標頭那一層；關掉後預檢轉給後端，被回 403。實測（8420＋5173，用 curl 模擬瀏覽器送的標頭）：
+    - 直接打後端並帶 5173 的 `Origin` 回 403（對照組）；經 proxy 則配對、建立成員、送回合、SSE、修改成員都通過。
+    - 經 proxy 但沒帶 CSRF 標頭、或跨站請求，仍回 403；關掉 `cors` 後，兩種來源的預檢都回 403。
+  - 測試：
+    - 前端 `npm test` 20 個（vitest＋jsdom＋Testing Library）；`src/test-server.ts` 是換掉全域 `fetch` 的假後端，不連網路。
+    - 後端 `tests/test_web_static.py`：頁面檔放行但 API 照舊要配對、頁面路徑沒配對不能寫、目錄外的檔案讀不到、每種回應都帶安全標頭；另外掃描前端原始碼，禁止 `dangerouslySetInnerHTML`、`innerHTML`、`eval` 等，入口頁不能有行內程式碼、行內樣式或外部網址。
+    - `tests/test_web_security.py` 原本檢查沒配對讀 `/missing` 回 401，改成 `/api/missing`（`/api/` 以外現在是可讀的頁面檔，跟著 SPEC 改）。
+    - 實機（8420）：打包後的頁面與程式檔和打包結果逐位元組相同，三個安全標頭都在，目錄外的檔案讀不到，用其他主機名稱連線回 400。
+  - 已知限制：
+    - 沒有用真的瀏覽器看過畫面：元件測試跑在 jsdom，proxy 是用 curl 驗證的。
+    - 成員畫面不會自動更新狀態，要按「重新整理」。
+    - 沒有裝 ESLint；禁止注入 HTML 的規則靠 `tests/test_web_static.py` 的原始碼掃描。
+    - 打包要手動執行 `npm run build`，還沒接進 Python 套件的打包流程或 CI。
+    - 打包檔含 React 等第三方程式碼。現在打包檔不進 Git；之後對外發布安裝包時，要先建立 `THIRD_PARTY_NOTICES.md`（repo 目前沒有這個檔）。
+  - 沒做：私聊與群聊畫面、SSE、AI 回覆的 Markdown 顯示、依模型清單選模型。
+- 截至 2026-11-14：`79908d9` 是最新的程式 commit；`pytest` 結果 372 passed（`-W error`），前端 `npm test` 20 passed。推送現況以 `git status` 為準，筆記更新不一定已推送。還沒有聊天畫面、橋接程式（見下方建議第 2 項）。
 - 建議的下一步（建議，不是決定）：
   1. （已完成，`95e69a8` SPEC、`d34468c` 實作）FR-2 回覆長度上限：UTF-8 超過 100,000 位元組時回合失敗，分類 `reply_too_long`，回覆不存、不截斷；檢查在服務層 `save`。限制：橋接每次回覆是一行，單行上限 120,000 位元組（`cli_socket.MAX_RESPONSE`），橋接若回傳更大的一行，`worker_turn` 會當成連線失敗，回合變成「未知」而不是「回覆過長」；要明確告知得由橋接端自己先檢查 100,000 位元組並回報，做橋接與協定第 3 版時一起處理。
   2. 接 Codex 的真實轉接器。包住 `worker_turn` 的 `WorkerTurnRunner` 已經有了，剩下的是：
@@ -55,7 +86,7 @@
      - 橋接協定第 3 版加上結構化的錯誤分類（`error_kind`），才分得出 `timeout` 與 `internal_error`；目前橋接逾時回報為一般失敗，只能記成 `internal_error`。決定 1：等做橋接時一起加。
   3. （後端已完成，`86b8d94`；轉接器清單 API `3f382ef`，見上方）FR-1 成員設定。剩下的見上方「沒做」。
   4. （已完成，`a697e45` SPEC、`6535e39` 實作，見上方）範圍 C（NFR-3）：配對、Cookie、CSRF、Host、大小與頻率限制。剩下的見上方「已知限制」與「沒做」。
-  5. 前端（React＋TypeScript＋Vite），再接 Grok，最後做 FR-3 群聊。
+  5. 前端：骨架（配對、成員設定）已完成（`79908d9`，見上方）；接著是私聊畫面（FR-2：送出、SSE 進度、中斷、重新整理後接回），再接 Grok，最後做 FR-3 群聊。
 
 ## 尚未寫進其他文件的待辦
 
