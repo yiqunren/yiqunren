@@ -30,7 +30,22 @@
   - 執行者可以是單一個（所有轉接器共用）或 `{轉接器代號: 執行者}`；`create_app(turn_timeout=)` 只剩測試縮短逾時用，`None` 表示用成員設定。`WorkerTurnRunner` 的認證模式改取自回合，拿掉建構參數。
   - 資料庫第 5 版：新增 `members` 表（不存憑證；`timeout` 存秒數）；`turns` 加 `member_name`、`adapter` 兩欄（第 5 版之前的回合這兩欄是空的）與 `turns_member` 索引。
   - 沒做：前端；列出轉接器與其支援項目的 API（做畫面時需要）；依各家模型清單檢查模型名稱（SPEC 分期，等轉接器能提供清單）；FR-10 的「已核對」確認動作。
-- 截至 2026-11-14：`86b8d94` 是最新的功能 commit；`pytest` 結果 343 passed（`-W error`）。`origin/main` 已推到 `86b8d94`；之後的筆記更新不一定已推送，現況以 `git status` 為準。還沒有網頁介面、橋接程式（見下方建議第 2 項）。
+- 範圍 C（NFR-3 本機安全，2026-11-14，`a697e45` SPEC、`6535e39` 實作）：
+  - SPEC NFR-3 補了配對碼、Cookie、CSRF、Host、大小與頻率限制的細節與已知限制；所有檢查固定開啟，沒有關閉的開關。
+  - 實作：`app/web/security.py`（ASGI 中介層 `Guard`＋配對路由）、`app/storage/pairing.py`（配對碼與已配對瀏覽器，只存 SHA-256 雜湊）。檢查順序：Host → CSRF（GET、HEAD 以外）→ 配對 → 請求大小 → 頻率。
+  - 配對：`python -m app.web pair` 在本機終端印出一次性配對碼（伺服器有沒有在跑都可以；伺服器輸出與 log 不出現配對碼）；8 個字元、10 分鐘內有效、只能用一次，錯 5 次或再產生新碼就作廢。`POST /api/pair` 換 Cookie（HttpOnly、SameSite=Strict，名稱 `yiqunren_session_<埠>`，連續 30 天沒使用才失效，使用時續期）；`GET /api/session` 查配對狀態；`DELETE /api/session` 只登出這個瀏覽器；`python -m app.web unpair` 撤銷全部。
+  - 不必配對的端點只有 `GET /api/health`、`POST /api/pair`、`GET /api/session`、`DELETE /api/session`；其他請求（含讀取與 SSE）沒有有效 Cookie 一律回 401。
+  - CSRF：GET、HEAD 以外要帶 `X-Yiqunren-CSRF: 1`；有帶 `Origin` 必須等於 `http://<Host 標頭>`，有帶 `Sec-Fetch-Site` 必須是 `same-origin`，否則 403。Host 只接受 IP 位址或 `localhost` 加上設定的埠，否則 400。請求本體上限 512 KiB（超過 413，含沒有 Content-Length 的分段傳送）。改變狀態的請求合計每分鐘 60 次、其中送出回合每分鐘 20 次，超過回 429 並帶 `Retry-After`。
+  - 相容性變更：既有的 API 呼叫方式都要改。要先配對、帶 CSRF 標頭，並用 `127.0.0.1` 或 `localhost`（加正確埠）連線，用其他主機名稱回 400。`create_app` 多了 `clock` 參數，只供測試控制期限與頻率視窗。
+  - 資料庫第 6 版：新增 `pairing_code`（同時只有一組）與 `browser_sessions` 兩張表。
+  - 測試：`tests/test_web_security.py`（14 個）；`tests/web_client.py` 的 `PairedClient` 先配對再呼叫，其他 HTTP 測試檔都改用它，原有斷言沒有放寬。
+  - 已知限制：
+    - 頻率計數只在伺服器行程的記憶體裡，重啟就重新計算。
+    - Cookie 不分埠，本機其他埠的網頁伺服器也收得到（瀏覽器規則）；Cookie 名稱帶埠號只避免兩個實例互相蓋掉。開放到其他網路時走 HTTP，同網路的人可能看到 Cookie，要另外處理 HTTPS，不在 MVP 範圍（SPEC 已寫）。
+    - 啟動時「還沒有配對任何瀏覽器」的提示只在實機確認過（8420、假轉接器），沒有自動測試。
+    - 推論，尚未驗證：前端開發若用 Vite 開發伺服器（不同埠），請求的 `Origin` 會和 `Host` 不同而被擋；做前端時要決定怎麼處理，同時要確保 `fetch` 帶 CSRF 標頭（SSE 的 GET 不需要）。
+  - 沒做：前端的配對畫面；HTTPS。
+- 截至 2026-11-14：`6535e39` 是最新的功能 commit；`pytest` 結果 357 passed（`-W error`）。推送現況以 `git status` 為準，筆記更新不一定已推送。還沒有網頁介面、橋接程式（見下方建議第 2 項）。
 - 建議的下一步（建議，不是決定）：
   1. （已完成，`95e69a8` SPEC、`d34468c` 實作）FR-2 回覆長度上限：UTF-8 超過 100,000 位元組時回合失敗，分類 `reply_too_long`，回覆不存、不截斷；檢查在服務層 `save`。限制：橋接每次回覆是一行，單行上限 120,000 位元組（`cli_socket.MAX_RESPONSE`），橋接若回傳更大的一行，`worker_turn` 會當成連線失敗，回合變成「未知」而不是「回覆過長」；要明確告知得由橋接端自己先檢查 100,000 位元組並回報，做橋接與協定第 3 版時一起處理。
   2. 接 Codex 的真實轉接器。包住 `worker_turn` 的 `WorkerTurnRunner` 已經有了，剩下的是：
@@ -38,7 +53,7 @@
      - 把它接進設定與 `create_app`（成員、認證模式、`fields` 怎麼組：Codex 的欄位是 message、thread_id、workspace、model、effort）。
      - 橋接協定第 3 版加上結構化的錯誤分類（`error_kind`），才分得出 `timeout` 與 `internal_error`；目前橋接逾時回報為一般失敗，只能記成 `internal_error`。決定 1：等做橋接時一起加。
   3. （後端已完成，`86b8d94`，見上方）FR-1 成員設定。剩下的見上方「沒做」。
-  4. 範圍 C（NFR-3）：配對、Cookie、CSRF、大小與頻率限制；目前所有改變狀態的請求（送出、中斷、刪除對話）都還沒有防護，所以後端只適合在本機單人環境用。
+  4. （已完成，`a697e45` SPEC、`6535e39` 實作，見上方）範圍 C（NFR-3）：配對、Cookie、CSRF、Host、大小與頻率限制。剩下的見上方「已知限制」與「沒做」。
   5. 前端（React＋TypeScript＋Vite），再接 Grok，最後做 FR-3 群聊。
 
 ## 尚未寫進其他文件的待辦
