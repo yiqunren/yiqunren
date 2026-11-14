@@ -71,7 +71,7 @@
    - 沒涵蓋：只比對了 `.claude/settings.local.json` 列到的目錄名稱，舊專案若有其他私人名稱（例如舊產品名）沒有清單可比對。
    - `CLAUDE.md` 隔離規則提到上游專案名稱 AgentsOffice、AgentFleet，已隨 repo 公開；要不要保留由擁有者決定。
 6. 狀態目錄的權限檢查要求 0700，所以 `YIQUNREN_STATE_DIR` 設在 WSL 的 `/mnt/*`（drvfs 預設權限通常是 0777）會被拒絕。這比技術選型報告第 7 節第 5 項「不必把 `/mnt/*` 擋掉」更嚴；要不要放寬尚未決定。
-7. （已完成，`0197247`）寫入權登記庫的預設位置原本在 repo 的 `data/` 底下（技術選型報告第 4 節），已改到狀態目錄的 `write-ownership.sqlite3`，和後端資料庫同一個 0700 目錄；`YIQUNREN_WRITE_REGISTRY` 仍可覆寫，找不到狀態目錄時回寫入權錯誤、禁止開始寫入。狀態目錄的判斷抽成 `app/web/config.py` 的 `resolve_state_dir()`，後端與寫入權共用。這是匯入檔的修改，已記在 `PROVENANCE.md`。沒做：舊位置沒有搬移（repo 裡本來就沒有 `data/`）；README 還沒寫登記庫的位置與覆寫方式（目前只有命令列工具和 `turn_host` 會用到，後端還沒接上）。
+7. （已完成，`0197247`）寫入權登記庫的預設位置原本在 repo 的 `data/` 底下（技術選型報告第 4 節），已改到狀態目錄的 `write-ownership.sqlite3`，和後端資料庫同一個 0700 目錄；`YIQUNREN_WRITE_REGISTRY` 仍可覆寫，找不到狀態目錄時回寫入權錯誤、禁止開始寫入。狀態目錄的判斷抽成 `app/web/config.py` 的 `resolve_state_dir()`，後端與寫入權共用。這是匯入檔的修改，已記在 `PROVENANCE.md`。沒做：舊位置沒有搬移（repo 裡本來就沒有 `data/`）。
 8. `d0a6ee8` 之後轉接器介面的已知限制（沒有處理，也沒有 SPEC 要求）：
    - 接回（`resume`）時進度從頭查回，重啟前已經記過的進度項可能再記一次（只影響進度顯示；要避免得改 `worker_turn`）。
    - 中斷比 `turn_begin` 的回覆先到時，轉接器會在拿到橋接身分後補送 `turn_stop`；補送失敗只記一行警告，回合會照常跑完或逾時。
